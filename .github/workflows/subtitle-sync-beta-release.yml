@@ -12,9 +12,9 @@ on:
         required: true
         type: string
       version_code:
-        description: "Android versionCode; must increase for every published build"
-        required: true
-        type: number
+        description: "Optional Android versionCode override; leave empty to derive it from the release tag"
+        required: false
+        type: string
       release_notes:
         description: "Full Markdown release notes"
         required: true
@@ -38,10 +38,64 @@ jobs:
       DOVI_EXTRACTOR_HOOK_READY: "true"
       DOVI_ENABLE_REAL_LINK: "true"
       DOVI_LIBDOVI_PREBUILT_ROOT: DV7/libdovi
+      # Every build in this series numbers its versionCode as 2000 + the tag suffix,
+      # keeping it clear of the mainline app versionCode range.
+      BETA_TAG_PREFIX: "v0.7.17-beta-subtitle-sync."
+      BETA_VERSION_CODE_BASE: "2000"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve version code
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          VERSION_CODE_OVERRIDE: ${{ inputs.version_code }}
+        run: |
+          set -euo pipefail
+
+          suffix="${RELEASE_TAG#"$BETA_TAG_PREFIX"}"
+          if [ "$suffix" = "$RELEASE_TAG" ] || ! [[ "$suffix" =~ ^[0-9]+$ ]]; then
+            echo "Release tag must be ${BETA_TAG_PREFIX}<number>, got '${RELEASE_TAG}'" >&2
+            exit 1
+          fi
+
+          version_code=$(( BETA_VERSION_CODE_BASE + 10#$suffix ))
+
+          override="$(printf '%s' "${VERSION_CODE_OVERRIDE}" | tr -d '[:space:]')"
+          if [ -n "$override" ]; then
+            if ! [[ "$override" =~ ^[0-9]+$ ]]; then
+              echo "version_code override must be a positive integer, got '${VERSION_CODE_OVERRIDE}'" >&2
+              exit 1
+            fi
+            version_code=$(( 10#$override ))
+          fi
+
+          highest=0
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            published_suffix="${tag#"$BETA_TAG_PREFIX"}"
+            [[ "$published_suffix" =~ ^[0-9]+$ ]] || continue
+            published_code=$(( BETA_VERSION_CODE_BASE + 10#$published_suffix ))
+            if (( published_code > highest )); then
+              highest=$published_code
+            fi
+            if [ "$tag" = "$RELEASE_TAG" ]; then
+              echo "Release ${RELEASE_TAG} already exists." >&2
+              exit 1
+            fi
+          done < <(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName')
+
+          if (( version_code <= highest )); then
+            echo "versionCode ${version_code} would be a downgrade; Android refuses to install over the published ${highest}." >&2
+            echo "Publish a higher tag in the ${BETA_TAG_PREFIX} series, or pass a version_code above ${highest}." >&2
+            exit 1
+          fi
+
+          echo "version_code=${version_code}" >> "$GITHUB_OUTPUT"
+          echo "Resolved versionCode ${version_code} for ${RELEASE_TAG} (highest published: ${highest})" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -79,10 +133,10 @@ jobs:
             echo "NUVIO_BENCHMARK_KEY_PASSWORD=$KEY_PASSWORD"
             echo "NUVIO_BENCHMARK_STORE_PASSWORD=$KEY_PASSWORD"
             echo "NUVIO_VERSION_NAME=${{ inputs.release_tag }}"
-            echo "NUVIO_VERSION_CODE=${{ inputs.version_code }}"
+            echo "NUVIO_VERSION_CODE=${{ steps.version.outputs.version_code }}"
             echo "NUVIO_GITHUB_OWNER=${{ github.repository_owner }}"
             echo "NUVIO_GITHUB_REPO=${{ github.event.repository.name }}"
-            echo "NUVIO_UPDATE_PRERELEASE_PREFIX=v0.7.17-beta-subtitle-sync."
+            echo "NUVIO_UPDATE_PRERELEASE_PREFIX=${BETA_TAG_PREFIX}"
           } >> "$GITHUB_ENV"
 
       - name: Test subtitle synchronization
@@ -97,8 +151,11 @@ jobs:
         run: ./gradlew :app:assembleFullBenchmark
 
       - name: Verify APKs
+        env:
+          EXPECTED_VERSION_CODE: ${{ steps.version.outputs.version_code }}
         run: |
           shopt -s nullglob
+          build_tools="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
           apks=(app/build/outputs/apk/full/benchmark/*.apk)
           if [ "${#apks[@]}" -ne 5 ]; then
             printf 'Expected 5 APKs, found %s\n' "${#apks[@]}"
@@ -109,12 +166,21 @@ jobs:
               echo "Missing libdovi_bridge.so in $apk"
               exit 1
             }
-            "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner" \
+            "$build_tools/apksigner" \
               verify --print-certs "$apk" | grep -q \
               '92c6b980f9ba67417eef61b2b5142daa7cd6751f974e108964fb24e0da3a8f52' || {
                 echo "Unexpected signing certificate in $apk"
                 exit 1
               }
+            actual_version_code="$(
+              "$build_tools/aapt2" dump badging "$apk" \
+                | sed -n "s/^package:.*versionCode='\([0-9]*\)'.*/\1/p" \
+                | head -1
+            )"
+            if [ "$actual_version_code" != "$EXPECTED_VERSION_CODE" ]; then
+              echo "Expected versionCode $EXPECTED_VERSION_CODE in $apk, found '${actual_version_code}'"
+              exit 1
+            fi
           done
 
       - name: Publish prerelease
