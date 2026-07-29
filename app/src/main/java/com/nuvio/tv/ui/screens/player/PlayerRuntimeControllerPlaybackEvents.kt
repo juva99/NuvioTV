@@ -117,7 +117,7 @@ internal fun PlayerRuntimeController.resetPostPlayStateAfterPlaybackEnded() {
     if (!shouldResetPostPlayStateAfterPlaybackEnded(
             state = _uiState.value,
             hasInFlightNextEpisodeAutoPlay = nextEpisodeAutoPlayJob?.isActive == true,
-            hasRenderedFirstFrame = hasRenderedFirstFrame
+            hasObservedFreshPlaybackForCurrentStream = hasObservedFreshPlaybackForCurrentStream
         )
     ) {
         return
@@ -138,17 +138,26 @@ internal fun PlayerRuntimeController.resetPostPlayStateAfterPlaybackEnded() {
     resetPostPlayOverlayState(clearEpisode = false)
 }
 
+/**
+ * Playback is treated as finished once the position reaches the last
+ * [PLAYBACK_END_WINDOW_MS] of the timeline.
+ */
+internal const val PLAYBACK_END_WINDOW_MS = 500L
+
+internal fun isPositionAtEndOfPlayback(positionMs: Long, durationMs: Long): Boolean =
+    durationMs > 0L && positionMs >= durationMs - PLAYBACK_END_WINDOW_MS
+
 internal fun shouldResetPostPlayStateAfterPlaybackEnded(
     state: PlayerUiState,
     hasInFlightNextEpisodeAutoPlay: Boolean,
-    hasRenderedFirstFrame: Boolean = true
+    hasObservedFreshPlaybackForCurrentStream: Boolean = true
 ): Boolean {
-    // A completion signal that arrives before the current stream has rendered its
-    // first frame belongs to the previous episode (a stale tick emitted while an
-    // auto-play switch is still loading). Acting on it would auto-play again and
-    // skip an extra episode, which is easy to hit on short episodes where the
-    // near-end trigger and the natural end are only seconds apart.
-    if (!hasRenderedFirstFrame) return false
+    // A completion signal that arrives before the current stream has reported any
+    // position clearly before its end belongs to the previous episode (a stale tick
+    // emitted while an auto-play switch is still loading). Acting on it would
+    // auto-play again and skip an extra episode, which is easy to hit on short
+    // episodes where the near-end trigger and the natural end are only seconds apart.
+    if (!hasObservedFreshPlaybackForCurrentStream) return false
     if (state.postPlayMode?.blocksNaturalCompletion() == true) return false
     if (hasInFlightNextEpisodeAutoPlay) return false
     return true
@@ -170,8 +179,21 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                     )
                     val playingNow = view.isPlayingNow()
                     val cacheBuffering = view.isPausedForCacheNow() || view.isCoreIdleNow()
+                    // MPV keeps reporting the previous file's position/duration for a
+                    // short window after a stream switch, so a sample sitting at the
+                    // end of the timeline can be a leftover from the episode we just
+                    // finished. Only trust "the stream is playing" once we have seen a
+                    // position that is clearly before the end of the current file.
+                    val atEndOfTimeline = isPositionAtEndOfPlayback(
+                        positionMs = pos,
+                        durationMs = playerDuration
+                    )
+                    if (!atEndOfTimeline) {
+                        hasObservedFreshPlaybackForCurrentStream = true
+                    }
+                    val freshPlayback = hasObservedFreshPlaybackForCurrentStream
                     var firstFrameReady = hasRenderedFirstFrame
-                        if (!firstFrameReady) {
+                        if (!firstFrameReady && freshPlayback) {
                             firstFrameReady = pos > 0L || (playingNow && !cacheBuffering && playerDuration > 0L)
                             if (firstFrameReady) {
                                 hasRenderedFirstFrame = true
@@ -200,7 +222,7 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                         currentPosition = displayPosition,
                         duration = playerDuration
                     )
-                    val ended = playerDuration > 0L && pos >= (playerDuration - 500L)
+                    val ended = freshPlayback && atEndOfTimeline
                     val wasEnded = _uiState.value.playbackEnded
                     _uiState.update { state ->
                         state.copy(
@@ -234,6 +256,12 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                 val playerDuration = player.duration
                 if (playerDuration > lastKnownDuration) {
                     lastKnownDuration = playerDuration
+                }
+                // A sample sitting at the end of the timeline can still belong to
+                // the episode we just finished while the next stream is loading, so
+                // only positions clearly before the end prove the new stream runs.
+                if (!isPositionAtEndOfPlayback(positionMs = pos, durationMs = playerDuration)) {
+                    hasObservedFreshPlaybackForCurrentStream = true
                 }
                 val displayPosition = pendingPreviewSeekPosition ?: pos
                 updatePlaybackTimeline(

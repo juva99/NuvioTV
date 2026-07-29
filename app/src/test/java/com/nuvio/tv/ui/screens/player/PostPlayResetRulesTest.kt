@@ -75,26 +75,40 @@ class PostPlayResetRulesTest {
     }
 
     @Test
-    fun `ended signal before first frame of the new stream is ignored`() {
+    fun `ended signal is ignored while the next stream is still loading`() {
         // Stale completion tick from the previous episode while an auto-play
         // switch is still loading: acting on it would skip an extra episode.
         assertFalse(
             shouldResetPostPlayStateAfterPlaybackEnded(
                 state = PlayerUiState(postPlayDismissedForCurrentEpisode = true),
                 hasInFlightNextEpisodeAutoPlay = false,
-                hasRenderedFirstFrame = false
+                hasObservedFreshPlaybackForCurrentStream = false
             )
         )
     }
 
     @Test
-    fun `ended playback resets once the current stream has rendered a frame`() {
+    fun `ended playback resets once the current stream has actually played`() {
         assertTrue(
             shouldResetPostPlayStateAfterPlaybackEnded(
                 state = PlayerUiState(postPlayDismissedForCurrentEpisode = true),
                 hasInFlightNextEpisodeAutoPlay = false,
-                hasRenderedFirstFrame = true
+                hasObservedFreshPlaybackForCurrentStream = true
             )
         )
+    }
+
+    @Test
+    fun `position at the end of the timeline is treated as playback end`() {
+        assertTrue(isPositionAtEndOfPlayback(positionMs = 1_200_000L, durationMs = 1_200_000L))
+        assertTrue(isPositionAtEndOfPlayback(positionMs = 1_199_600L, durationMs = 1_200_000L))
+    }
+
+    @Test
+    fun `position before the end and unknown duration are not playback end`() {
+        assertFalse(isPositionAtEndOfPlayback(positionMs = 1_198_000L, durationMs = 1_200_000L))
+        assertFalse(isPositionAtEndOfPlayback(positionMs = 0L, durationMs = 1_200_000L))
+        // Live / not-yet-known duration must never look like the end of playback.
+        assertFalse(isPositionAtEndOfPlayback(positionMs = 5_000L, durationMs = 0L))
     }
 }
