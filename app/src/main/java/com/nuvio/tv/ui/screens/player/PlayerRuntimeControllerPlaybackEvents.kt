@@ -116,7 +116,8 @@ internal fun PlayerRuntimeController.updateAudioControlAvailability(
 internal fun PlayerRuntimeController.resetPostPlayStateAfterPlaybackEnded() {
     if (!shouldResetPostPlayStateAfterPlaybackEnded(
             state = _uiState.value,
-            hasInFlightNextEpisodeAutoPlay = nextEpisodeAutoPlayJob?.isActive == true
+            hasInFlightNextEpisodeAutoPlay = nextEpisodeAutoPlayJob?.isActive == true,
+            hasRenderedFirstFrame = hasRenderedFirstFrame
         )
     ) {
         return
@@ -139,8 +140,15 @@ internal fun PlayerRuntimeController.resetPostPlayStateAfterPlaybackEnded() {
 
 internal fun shouldResetPostPlayStateAfterPlaybackEnded(
     state: PlayerUiState,
-    hasInFlightNextEpisodeAutoPlay: Boolean
+    hasInFlightNextEpisodeAutoPlay: Boolean,
+    hasRenderedFirstFrame: Boolean = true
 ): Boolean {
+    // A completion signal that arrives before the current stream has rendered its
+    // first frame belongs to the previous episode (a stale tick emitted while an
+    // auto-play switch is still loading). Acting on it would auto-play again and
+    // skip an extra episode, which is easy to hit on short episodes where the
+    // near-end trigger and the natural end are only seconds apart.
+    if (!hasRenderedFirstFrame) return false
     if (state.postPlayMode?.blocksNaturalCompletion() == true) return false
     if (hasInFlightNextEpisodeAutoPlay) return false
     return true

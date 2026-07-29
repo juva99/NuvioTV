@@ -73,4 +73,28 @@ class PostPlayResetRulesTest {
             )
         )
     }
+
+    @Test
+    fun `ended signal before first frame of the new stream is ignored`() {
+        // Stale completion tick from the previous episode while an auto-play
+        // switch is still loading: acting on it would skip an extra episode.
+        assertFalse(
+            shouldResetPostPlayStateAfterPlaybackEnded(
+                state = PlayerUiState(postPlayDismissedForCurrentEpisode = true),
+                hasInFlightNextEpisodeAutoPlay = false,
+                hasRenderedFirstFrame = false
+            )
+        )
+    }
+
+    @Test
+    fun `ended playback resets once the current stream has rendered a frame`() {
+        assertTrue(
+            shouldResetPostPlayStateAfterPlaybackEnded(
+                state = PlayerUiState(postPlayDismissedForCurrentEpisode = true),
+                hasInFlightNextEpisodeAutoPlay = false,
+                hasRenderedFirstFrame = true
+            )
+        )
+    }
 }
