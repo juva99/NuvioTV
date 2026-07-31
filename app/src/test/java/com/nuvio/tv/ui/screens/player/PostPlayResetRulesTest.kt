@@ -111,4 +111,11 @@ class PostPlayResetRulesTest {
         // Live / not-yet-known duration must never look like the end of playback.
         assertFalse(isPositionAtEndOfPlayback(positionMs = 5_000L, durationMs = 0L))
     }
+
+    @Test
+    fun `unknown duration does not prove playback belongs to the new stream`() {
+        assertFalse(isFreshPlaybackSample(positionMs = 0L, durationMs = 0L))
+        assertFalse(isFreshPlaybackSample(positionMs = 5_000L, durationMs = 0L))
+        assertFalse(isFreshPlaybackSample(positionMs = 0L, durationMs = -1L))
+    }
 }

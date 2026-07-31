@@ -147,6 +147,10 @@ internal const val PLAYBACK_END_WINDOW_MS = 500L
 internal fun isPositionAtEndOfPlayback(positionMs: Long, durationMs: Long): Boolean =
     durationMs > 0L && positionMs >= durationMs - PLAYBACK_END_WINDOW_MS
 
+internal fun isFreshPlaybackSample(positionMs: Long, durationMs: Long): Boolean =
+    durationMs > 0L &&
+        !isPositionAtEndOfPlayback(positionMs = positionMs, durationMs = durationMs)
+
 internal fun shouldResetPostPlayStateAfterPlaybackEnded(
     state: PlayerUiState,
     hasInFlightNextEpisodeAutoPlay: Boolean,
@@ -188,7 +192,7 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                         positionMs = pos,
                         durationMs = playerDuration
                     )
-                    if (!atEndOfTimeline) {
+                    if (isFreshPlaybackSample(positionMs = pos, durationMs = playerDuration)) {
                         hasObservedFreshPlaybackForCurrentStream = true
                     }
                     val freshPlayback = hasObservedFreshPlaybackForCurrentStream
@@ -260,7 +264,7 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                 // A sample sitting at the end of the timeline can still belong to
                 // the episode we just finished while the next stream is loading, so
                 // only positions clearly before the end prove the new stream runs.
-                if (!isPositionAtEndOfPlayback(positionMs = pos, durationMs = playerDuration)) {
+                if (isFreshPlaybackSample(positionMs = pos, durationMs = playerDuration)) {
                     hasObservedFreshPlaybackForCurrentStream = true
                 }
                 val displayPosition = pendingPreviewSeekPosition ?: pos
