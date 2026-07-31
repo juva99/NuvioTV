@@ -10,10 +10,6 @@ internal fun PlayerRuntimeController.releasePlayer() {
 
 internal fun PlayerRuntimeController.releasePlayer(flushPlaybackState: Boolean) {
     isReleasingPlayer = true
-    pendingLifecyclePauseJob?.cancel()
-    pendingLifecyclePauseJob = null
-    wasPlayingBeforeLifecyclePause = false
-    wasStoppedByLifecycle = false
     com.nuvio.tv.core.recommendations.TvRecommendationManager.isPlaybackActive.value = false
     if (flushPlaybackState) {
         stopTorrentStream()
@@ -51,6 +47,8 @@ internal fun PlayerRuntimeController.releasePlayer(flushPlaybackState: Boolean) 
     // worth of them stayed resident until the next player build without this.
     subtitleReferenceCueStore.clear()
     _uiState.update { it.copy(automaticSubtitleSyncRunning = false) }
+    subtitleTimingRefreshJob?.cancel()
+    subtitleTimingRefreshJob = null
     playbackPreparationJob?.cancel()
     playbackPreparationJob = null
     traktMappingJob?.cancel()
