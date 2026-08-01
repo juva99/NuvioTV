@@ -1,7 +1,6 @@
 package com.nuvio.tv.ui.screens.home
 
 import android.content.Context
-import android.content.res.Configuration
 import androidx.compose.runtime.Immutable
 import com.nuvio.tv.LocaleCache
 import com.nuvio.tv.R
@@ -9,7 +8,7 @@ import com.nuvio.tv.domain.model.CatalogRow
 import com.nuvio.tv.domain.model.Collection
 import com.nuvio.tv.domain.model.stableItemKey
 import com.nuvio.tv.ui.util.asStable
-import java.util.Locale
+import com.nuvio.tv.ui.util.localizedForAppLocale
 import kotlinx.coroutines.withContext
 
 @Immutable
@@ -31,7 +30,7 @@ internal fun buildModernHomePresentation(
     maxCatalogRows: Int? = null
 ): ModernHomePresentationState {
     val visibleHomeRows = resolveVisibleHomeRows(input)
-    val localizedContext = getLocalizedContext(context)
+    val localizedContext = context.localizedForAppLocale()
     val strContinueWatching = localizedContext.getString(R.string.continue_watching)
     val strAirsDate = localizedContext.getString(R.string.cw_airs_date)
     val strUpcoming = localizedContext.getString(R.string.cw_upcoming)
@@ -345,15 +344,6 @@ private fun resolveVisibleHomeRows(input: ModernHomePresentationInput): List<Hom
 
 private fun collectionRowKey(collection: Collection): String {
     return "collection_${collection.id}"
-}
-
-private fun getLocalizedContext(context: Context): Context {
-    val tag = LocaleCache.localeTag.takeIf { it != LocaleCache.UNSET && it.isNotEmpty() }
-        ?: return context
-    val locale = Locale.forLanguageTag(tag)
-    val config = Configuration(context.resources.configuration)
-    config.setLocale(locale)
-    return context.createConfigurationContext(config)
 }
 
 private fun Collection.hasVisibleFolders(): Boolean {

@@ -45,6 +45,7 @@ import com.nuvio.tv.data.repository.extractYear
 import com.nuvio.tv.data.repository.toTraktIds
 import com.nuvio.tv.ui.components.SourceChipItem
 import com.nuvio.tv.ui.components.SourceChipStatus
+import com.nuvio.tv.ui.util.localizedForAppLocale
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
@@ -110,11 +111,14 @@ class StreamScreenViewModel @Inject constructor(
     private var badgedAddonNames: Set<String> = emptySet()
     private var playbackMetaVideos: List<Video>? = null
 
+    private val localizedContext: Context
+        get() = context.localizedForAppLocale()
+
     private val embeddedStreamGroupName: String by lazy {
-        context.getString(R.string.stream_embedded_group)
+        localizedContext.getString(R.string.stream_embedded_group)
     }
     private val embeddedStreamFallbackName: String by lazy {
-        context.getString(R.string.stream_embedded_fallback_name)
+        localizedContext.getString(R.string.stream_embedded_fallback_name)
     }
 
     private val videoId: String = savedStateHandle["videoId"] ?: ""
@@ -379,7 +383,7 @@ class StreamScreenViewModel @Inject constructor(
                         showDirectAutoPlayOverlay = true,
                         autoPlayDecided = true,
                         directAutoPlayMessage = if (playerSettings.showPlayerLoadingStatus) {
-                            context.getString(R.string.stream_finding_source)
+                            localizedContext.getString(R.string.stream_finding_source)
                         } else {
                             null
                         }
@@ -1144,7 +1148,7 @@ class StreamScreenViewModel @Inject constructor(
             it.copy(
                 showDirectAutoPlayOverlay = true,
                 directAutoPlayMessage = if (showLoadingStatus) {
-                    context.getString(R.string.debrid_resolving_stream)
+                    localizedContext.getString(R.string.debrid_resolving_stream)
                 } else {
                     null
                 },
@@ -1200,19 +1204,19 @@ class StreamScreenViewModel @Inject constructor(
                 resolved
             }
             DirectDebridResolveResult.MissingApiKey -> {
-                showDirectDebridPlaybackError(context.getString(R.string.debrid_missing_api_key), refreshStreams = false)
+                showDirectDebridPlaybackError(localizedContext.getString(R.string.debrid_missing_api_key), refreshStreams = false)
                 null
             }
             DirectDebridResolveResult.NotCached -> {
-                showDirectDebridPlaybackError(context.getString(R.string.debrid_not_cached), refreshStreams = false)
+                showDirectDebridPlaybackError(localizedContext.getString(R.string.debrid_not_cached), refreshStreams = false)
                 null
             }
             DirectDebridResolveResult.Stale -> {
-                showDirectDebridPlaybackError(context.getString(R.string.debrid_stale_stream), refreshStreams = true)
+                showDirectDebridPlaybackError(localizedContext.getString(R.string.debrid_stale_stream), refreshStreams = true)
                 null
             }
             DirectDebridResolveResult.Error -> {
-                showDirectDebridPlaybackError(context.getString(R.string.debrid_resolution_failed), refreshStreams = false)
+                showDirectDebridPlaybackError(localizedContext.getString(R.string.debrid_resolution_failed), refreshStreams = false)
                 null
             }
         }
@@ -1444,7 +1448,7 @@ class StreamScreenViewModel @Inject constructor(
 
             updateUiStateIfChanged {
                 it.copy(
-                    directAutoPlayMessage = context.getString(R.string.player_torrent_starting_engine),
+                    directAutoPlayMessage = localizedContext.getString(R.string.player_torrent_starting_engine),
                     directAutoPlayProgress = null
                 )
             }
@@ -1460,7 +1464,7 @@ class StreamScreenViewModel @Inject constructor(
                         is TorrentState.Connecting -> {
                             updateUiStateIfChanged {
                                 it.copy(
-                                    directAutoPlayMessage = context.getString(R.string.player_torrent_connecting_peers),
+                                    directAutoPlayMessage = localizedContext.getString(R.string.player_torrent_connecting_peers),
                                     directAutoPlayProgress = null
                                 )
                             }
@@ -1469,10 +1473,10 @@ class StreamScreenViewModel @Inject constructor(
                             val message = if (statsHidden) {
                                 null
                             } else {
-                                val speed = formatSpeed(context, torrentState.downloadSpeed)
-                                val peerInfo = context.getString(R.string.player_torrent_peer_info, torrentState.seeds, torrentState.peers)
-                                val mbLoaded = formatMB(context, torrentState.preloadedBytes)
-                                context.getString(R.string.player_torrent_buffered_status, mbLoaded, peerInfo, speed)
+                                val speed = formatSpeed(localizedContext, torrentState.downloadSpeed)
+                                val peerInfo = localizedContext.getString(R.string.player_torrent_peer_info, torrentState.seeds, torrentState.peers)
+                                val mbLoaded = formatMB(localizedContext, torrentState.preloadedBytes)
+                                localizedContext.getString(R.string.player_torrent_buffered_status, mbLoaded, peerInfo, speed)
                             }
                             
                             val progress = (torrentState.preloadedBytes.toFloat() / preloadTarget).coerceIn(0f, 1f)
@@ -1546,7 +1550,7 @@ class StreamScreenViewModel @Inject constructor(
                 } ?: false
 
                 if (!preloaded) {
-                    throw Exception(context.getString(R.string.torrent_error_start_timeout, 60))
+                    throw Exception(localizedContext.getString(R.string.torrent_error_start_timeout, 60))
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start torrent stream for external player", e)
@@ -1556,9 +1560,9 @@ class StreamScreenViewModel @Inject constructor(
                         externalPlayerOverlayVisible = false,
                         directAutoPlayMessage = null,
                         directAutoPlayProgress = null,
-                        playbackErrorMessage = context.getString(
+                        playbackErrorMessage = localizedContext.getString(
                             R.string.player_error_failed_start_torrent,
-                            e.message ?: context.getString(R.string.error_unknown)
+                            e.message ?: localizedContext.getString(R.string.error_unknown)
                         )
                     )
                 }
@@ -1605,7 +1609,7 @@ class StreamScreenViewModel @Inject constructor(
             updateUiStateIfChanged {
                 it.copy(
                     directAutoPlayMessage = if (settings.showPlayerLoadingStatus) {
-                        context.getString(R.string.external_player_loading_skip_segments)
+                        localizedContext.getString(R.string.external_player_loading_skip_segments)
                     } else {
                         null
                     },
@@ -1674,7 +1678,7 @@ class StreamScreenViewModel @Inject constructor(
         updateUiStateIfChanged {
             it.copy(
                 directAutoPlayMessage = if (showLoadingStatus) {
-                    context.getString(R.string.subtitle_loading_addon)
+                    localizedContext.getString(R.string.subtitle_loading_addon)
                 } else {
                     null
                 }
@@ -1691,11 +1695,11 @@ class StreamScreenViewModel @Inject constructor(
                 filename = playbackInfo.filename,
                 onProgress = { completed, total, addonName ->
                     val msg = if (completed == 0) {
-                        context.getString(R.string.player_loading_subtitles_from, total)
+                        localizedContext.getString(R.string.player_loading_subtitles_from, total)
                     } else if (addonName != null) {
-                        context.getString(R.string.player_loading_subtitles_addon, addonName, completed, total)
+                        localizedContext.getString(R.string.player_loading_subtitles_addon, addonName, completed, total)
                     } else {
-                        context.getString(R.string.player_loading_subtitles_progress, completed, total)
+                        localizedContext.getString(R.string.player_loading_subtitles_progress, completed, total)
                     }
                     if (showLoadingStatus) {
                         updateUiStateIfChanged { it.copy(directAutoPlayMessage = msg) }

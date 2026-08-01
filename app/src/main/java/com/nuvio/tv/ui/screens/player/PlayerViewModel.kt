@@ -26,6 +26,7 @@ import com.nuvio.tv.domain.repository.WatchProgressRepository
 import com.nuvio.tv.core.tmdb.TmdbService
 import com.nuvio.tv.core.tmdb.TmdbMetadataService
 import com.nuvio.tv.data.local.TmdbSettingsDataStore
+import com.nuvio.tv.ui.util.localizedForAppLocale
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.StateFlow
@@ -76,7 +77,7 @@ class PlayerViewModel @Inject constructor(
     }
 
     internal val controller = PlayerRuntimeController(
-        context = context,
+        context = context.localizedForAppLocale(),
         watchProgressRepository = watchProgressRepository,
         metaRepository = metaRepository,
         streamRepository = streamRepository,
