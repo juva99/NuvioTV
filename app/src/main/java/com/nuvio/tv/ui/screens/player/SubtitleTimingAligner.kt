@@ -98,15 +98,17 @@ internal object SubtitleTimingAligner {
     private const val MIN_PARTIAL_CONSTANT_MARGIN = 0.06
     private const val MIN_PARTIAL_CONSTANT_MATCH_RATIO = 0.75
     private const val MIN_PARTIAL_CONSTANT_SPAN_MS = 30L * 1000L
+    private const val MIN_WINDOW_CONSTANT_COUNT = 8
+    private const val MIN_WINDOW_CONSTANT_COVERAGE = 0.80
+    private const val MIN_WINDOW_CONSTANT_CONFIDENCE = 0.65
+    private const val MIN_EXCURSION_CONFIDENCE_DEFICIT = 0.03
+    private const val MAX_WINDOW_CONSTANT_UNSUPPORTED_EDGE_CUES = 8
     /**
-     * Upper bound on the reference points used to score a constant-offset hypothesis.
+     * Upper bound on the reference points used by the legacy full-span constant-offset score.
      *
-     * This must stay comparable to the number of target points in the same span. [scoreOffset]
-     * blends coverage as an F1 of the forward and reverse match ratios, so scoring a heavily
-     * thinned reference against a dense target depresses `reverseRatio` and the hypothesis is
-     * rejected however well it actually fits. At 128 that produced a dead zone in which a partial
-     * playback capture could never be accepted: too dense for the sparse-index bypass
-     * (`reference.size * 3 < localTarget.size`), too thin for a balanced F1.
+     * Larger references are validated from persistent local-window consensus instead. Independently
+     * sampling two translated tracks destroys the split/merge relationships between their cues,
+     * while scoring a thinned reference against a dense target distorts symmetric coverage.
      */
     private const val MAX_PARTIAL_SCORE_POINTS = 1024
 
@@ -121,19 +123,64 @@ internal object SubtitleTimingAligner {
         val scratch = Scratch()
         val windows = localWindows(referencePoints, targetPoints, candidates, scratch)
         if (windows.isEmpty()) return null
-        val groups = dropUnsupportedGroups(mergeWindows(windows))
+        val locallyFilteredGroups = dropUnsupportedGroups(mergeWindows(windows))
+        val groups = dropUnsupportedExcursions(locallyFilteredGroups)
         if (groups.isEmpty()) return null
+        val removedExcursion = groups.sumOf { it.windows.size } <
+            locallyFilteredGroups.sumOf { it.windows.size }
 
         val acceptedGroups = groups.filter { it.confidence >= 0.36 && it.matchedCueCount >= MIN_WINDOW_CUES }
         if (acceptedGroups.isEmpty()) return null
-        val partialConstantScore = strongPartialConstantScore(
-            acceptedGroups,
-            referencePoints,
-            targetPoints,
-            candidates,
-            scratch
-        )
-        val allowPartialConstant = partialConstantScore != null
+        val windowConstantResult = if (removedExcursion ||
+            referencePoints.size > MAX_PARTIAL_SCORE_POINTS
+        ) {
+            strongWindowConstantFit(
+                acceptedGroups,
+                referencePoints,
+                targetPoints,
+                candidates,
+                scratch
+            )
+        } else {
+            WindowConstantResult.NotApplicable
+        }
+        if (windowConstantResult == WindowConstantResult.Ambiguous) return null
+        val windowConstantFit = (windowConstantResult as? WindowConstantResult.Accepted)
+            ?.fit
+            ?.takeIf { hasSafeWindowConstantTargetEdges(acceptedGroups, targetPoints) }
+        val partialConstantFit = windowConstantFit ?: if (referencePoints.size <= MAX_PARTIAL_SCORE_POINTS) {
+            strongPartialConstantFit(
+                acceptedGroups,
+                referencePoints,
+                targetPoints,
+                candidates,
+                scratch
+            )
+        } else {
+            null
+        }
+        val allowPartialConstant = partialConstantFit != null
+        val totalMatched = acceptedGroups.sumOf(Group::matchedCueCount)
+        if (totalMatched < MIN_TOTAL_CUES) return null
+        val targetEndMs = target.maxOf(SrtCue::endMs) + 1L
+
+        // A minority excursion bracketed by the same timing state cannot represent a persistent
+        // edit. Once the remaining evidence independently validates as constant, emit that simple
+        // model instead of turning unsupported gaps into several subtly different segments.
+        if (windowConstantFit != null) {
+            return SubtitleSyncModel(
+                segments = listOf(
+                    SubtitleSyncSegment(
+                        targetStartMs = 0L,
+                        targetEndMs = targetEndMs,
+                        offsetMs = windowConstantFit.offsetMs,
+                        confidence = windowConstantFit.score
+                    )
+                ),
+                confidence = windowConstantFit.score,
+                matchedCueCount = totalMatched
+            )
+        }
         if (!allowPartialConstant) {
             val firstSupportedTargetMs = acceptedGroups.minOf { it.referenceStartMs - it.offsetMs }
             val lastSupportedTargetMs = acceptedGroups.maxOf { it.referenceEndMs - it.offsetMs }
@@ -141,7 +188,6 @@ internal object SubtitleTimingAligner {
                 lastSupportedTargetMs < targetPoints.last() - COVERAGE_PADDING_MS
             ) return null
         }
-        val targetEndMs = target.maxOf(SrtCue::endMs) + 1L
         val segments = buildSegments(acceptedGroups, targetEndMs, referencePoints, targetPoints, scratch)
         if (segments.isEmpty()) return null
 
@@ -168,9 +214,7 @@ internal object SubtitleTimingAligner {
             ) return null
         }
 
-        val totalMatched = acceptedGroups.sumOf(Group::matchedCueCount)
-        if (totalMatched < MIN_TOTAL_CUES) return null
-        val confidence = partialConstantScore ?: acceptedGroups
+        val confidence = partialConstantFit?.score ?: acceptedGroups
             .sumOf { it.confidence * it.matchedCueCount } / totalMatched.coerceAtLeast(1)
         if (confidence < 0.4) return null
         return SubtitleSyncModel(segments, confidence.coerceIn(0.0, 1.0), totalMatched)
@@ -488,13 +532,13 @@ internal object SubtitleTimingAligner {
     }
 
 
-    private fun strongPartialConstantScore(
+    private fun strongPartialConstantFit(
         groups: List<Group>,
         reference: List<Long>,
         target: List<Long>,
         candidates: List<Long>,
         scratch: Scratch
-    ): Double? {
+    ): ConstantFit? {
         if (groups.maxOf(Group::offsetMs) - groups.minOf(Group::offsetMs) > OFFSET_MERGE_TOLERANCE_MS) return null
         if (reference.last() - reference.first() < MIN_PARTIAL_CONSTANT_SPAN_MS) return null
 
@@ -513,7 +557,106 @@ internal object SubtitleTimingAligner {
                 scoreOffset(scoringReference, target, candidate, scratch).score > competingCutoff
         }
         if (hasCompetingOffset) return null
-        return selected.score.coerceIn(0.0, 1.0)
+        return ConstantFit(
+            offsetMs = offsetMs,
+            score = selected.score.coerceIn(0.0, 1.0)
+        )
+    }
+
+    /**
+     * Validates a constant model from local evidence distributed across a long timeline.
+     *
+     * Each window already won against every global offset candidate and carries that winning margin
+     * in its confidence. Requiring many agreeing windows over most of the reference is therefore
+     * stronger than downsampling the full tracks, which breaks translated cue split/merge
+     * relationships. This path is reserved for long inputs or for a model from which a minority
+     * transient excursion was removed.
+     */
+    private fun strongWindowConstantFit(
+        groups: List<Group>,
+        reference: List<Long>,
+        target: List<Long>,
+        candidates: List<Long>,
+        scratch: Scratch
+    ): WindowConstantResult {
+        if (groups.maxOf(Group::offsetMs) - groups.minOf(Group::offsetMs) >
+            OFFSET_MERGE_TOLERANCE_MS
+        ) return WindowConstantResult.NotApplicable
+
+        val windows = groups.flatMap(Group::windows)
+        if (windows.size < MIN_WINDOW_CONSTANT_COUNT) return WindowConstantResult.NotApplicable
+        val coveredMs = windows
+            .map { it.referenceStartMs..it.referenceEndMs }
+            .sortedBy(LongRange::first)
+            .fold(mutableListOf<LongRange>()) { merged, interval ->
+                val previous = merged.lastOrNull()
+                if (previous != null && interval.first <= previous.last) {
+                    merged[merged.lastIndex] = previous.first..maxOf(previous.last, interval.last)
+                } else {
+                    merged += interval
+                }
+                merged
+            }
+            .sumOf { (it.last - it.first).coerceAtLeast(0L) }
+        val referenceSpanMs = (reference.last() - reference.first()).coerceAtLeast(1L)
+        if (coveredMs.toDouble() / referenceSpanMs < MIN_WINDOW_CONSTANT_COVERAGE) {
+            return WindowConstantResult.NotApplicable
+        }
+
+        val totalMatches = windows.sumOf(WindowMatch::matchedCueCount).coerceAtLeast(1)
+        val confidence = windows.sumOf { it.confidence * it.matchedCueCount } / totalMatches
+        if (confidence < MIN_WINDOW_CONSTANT_CONFIDENCE) {
+            return WindowConstantResult.NotApplicable
+        }
+
+        val offsetMs = windows.map(WindowMatch::offsetMs).sorted()[windows.size / 2]
+        val scoringWindows = windows.map {
+            reference.rangeView(it.referenceStartMs, it.referenceEndMs)
+        }
+        val selectedScore = scoringWindows
+            .sumOf { scoreOffset(it, target, offsetMs, scratch).score } / scoringWindows.size
+        val competingCutoff = selectedScore - MIN_PARTIAL_CONSTANT_MARGIN
+        val hasCompetingOffset = candidates.any { candidate ->
+            if (abs(candidate - offsetMs) <= MATCH_TOLERANCE_MS) {
+                false
+            } else {
+                val competingScore = scoringWindows
+                    .sumOf { scoreOffset(it, target, candidate, scratch).score } /
+                    scoringWindows.size
+                competingScore > competingCutoff
+            }
+        }
+        if (hasCompetingOffset) return WindowConstantResult.Ambiguous
+
+        return WindowConstantResult.Accepted(
+            ConstantFit(
+                offsetMs = offsetMs,
+                score = confidence.coerceIn(0.0, 1.0)
+            )
+        )
+    }
+
+    /**
+     * Allows sparse title/credit metadata and one-sided passive playback captures, while refusing
+     * to extrapolate a middle-only capture across both unseen ends of the target.
+     */
+    private fun hasSafeWindowConstantTargetEdges(
+        groups: List<Group>,
+        target: List<Long>
+    ): Boolean {
+        val firstSupportedTargetMs = groups.minOf { it.referenceStartMs - it.offsetMs }
+        val lastSupportedTargetMs = groups.maxOf { it.referenceEndMs - it.offsetMs }
+        val leadingUnsupportedCues =
+            target.lowerBound(firstSupportedTargetMs - MATCH_TOLERANCE_MS)
+        val trailingUnsupportedCues = target.size -
+            target.lowerBound(lastSupportedTargetMs + MATCH_TOLERANCE_MS)
+        val leadingIsSafe =
+            firstSupportedTargetMs <= target.first() + COVERAGE_PADDING_MS ||
+                leadingUnsupportedCues <= MAX_WINDOW_CONSTANT_UNSUPPORTED_EDGE_CUES
+        val trailingIsSafe =
+            lastSupportedTargetMs >= target.last() - COVERAGE_PADDING_MS ||
+                trailingUnsupportedCues <= MAX_WINDOW_CONSTANT_UNSUPPORTED_EDGE_CUES
+        return leadingIsSafe || trailingIsSafe
     }
 
     private fun evenlySample(points: List<Long>, maximumSize: Int): List<Long> {
@@ -575,6 +718,83 @@ internal object SubtitleTimingAligner {
         if (kept.isEmpty()) return emptyList()
         // Dropping a spike can leave neighbours that now agree, so re-merge what survived.
         return mergeWindows(kept.flatMap(Group::windows))
+    }
+
+    /**
+     * Removes a short run of disagreeing groups when the timing state on both sides is the same.
+     *
+     * [dropUnsupportedGroups] handles one bad group at a time. Long translated tracks can produce
+     * several adjacent bad windows that become multiple groups, so none is individually weaker
+     * than both neighbours even though the whole run is a small excursion from a baseline covering
+     * the rest of the film. The whole run must also be meaningfully less confident than its
+     * brackets, so a short but well-supported A-B-A region created by two compensating edits remains
+     * eligible for piecewise alignment.
+     */
+    private fun dropUnsupportedExcursions(groups: List<Group>): List<Group> {
+        val ordered = groups.sortedBy(Group::referenceStartMs)
+        if (ordered.size < 3) return ordered
+
+        val dominant = ordered.maxByOrNull { candidate ->
+            ordered
+                .filter { abs(it.offsetMs - candidate.offsetMs) <= OFFSET_MERGE_TOLERANCE_MS }
+                .sumOf { it.windows.size }
+        } ?: return ordered
+        val agreesWithDominant: (Group) -> Boolean = {
+            abs(it.offsetMs - dominant.offsetMs) <= OFFSET_MERGE_TOLERANCE_MS
+        }
+        val totalWindows = ordered.sumOf { it.windows.size }
+        val dominantWindows = ordered.filter(agreesWithDominant).sumOf { it.windows.size }
+        if (dominantWindows * MINORITY_WINDOW_RATIO < totalWindows * (MINORITY_WINDOW_RATIO - 1)) {
+            return ordered
+        }
+
+        val remove = mutableSetOf<Int>()
+        var index = 0
+        while (index < ordered.size) {
+            if (agreesWithDominant(ordered[index])) {
+                index++
+                continue
+            }
+            val runStart = index
+            while (index < ordered.size && !agreesWithDominant(ordered[index])) index++
+            val runEnd = index
+            val isBracketed = runStart > 0 && runEnd < ordered.size &&
+                agreesWithDominant(ordered[runStart - 1]) &&
+                agreesWithDominant(ordered[runEnd])
+            val excursionWindows = ordered.subList(runStart, runEnd).sumOf { it.windows.size }
+            val bracketWindows = if (isBracketed) {
+                ordered[runStart - 1].windows.size + ordered[runEnd].windows.size
+            } else {
+                0
+            }
+            val excursionEvidence = ordered
+                .subList(runStart, runEnd)
+                .flatMap(Group::windows)
+            val bracketEvidence = if (isBracketed) {
+                ordered[runStart - 1].windows + ordered[runEnd].windows
+            } else {
+                emptyList()
+            }
+            val excursionConfidence = excursionEvidence
+                .map(WindowMatch::confidence)
+                .average()
+            val bracketConfidence = bracketEvidence
+                .map(WindowMatch::confidence)
+                .average()
+            if (isBracketed &&
+                excursionWindows * MINORITY_WINDOW_RATIO <= totalWindows &&
+                excursionWindows < bracketWindows &&
+                excursionConfidence + MIN_EXCURSION_CONFIDENCE_DEFICIT <= bracketConfidence
+            ) {
+                remove += runStart until runEnd
+            }
+        }
+        if (remove.isEmpty()) return ordered
+        return mergeWindows(
+            ordered
+                .filterIndexed { groupIndex, _ -> groupIndex !in remove }
+                .flatMap(Group::windows)
+        )
     }
 
     private fun buildSegments(
@@ -757,6 +977,12 @@ internal object SubtitleTimingAligner {
     }
 
     private data class TimingMatch(val referenceMs: Long, val targetMs: Long, val errorMs: Long)
+    private data class ConstantFit(val offsetMs: Long, val score: Double)
+    private sealed interface WindowConstantResult {
+        data class Accepted(val fit: ConstantFit) : WindowConstantResult
+        data object Ambiguous : WindowConstantResult
+        data object NotApplicable : WindowConstantResult
+    }
 
     private class WindowScore(
         val offsetMs: Long,

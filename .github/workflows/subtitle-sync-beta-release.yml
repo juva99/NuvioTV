@@ -91,7 +91,10 @@ jobs:
             --tests "com.nuvio.tv.ui.screens.player.SrtDocumentTest" \
             --tests "com.nuvio.tv.ui.screens.player.SubtitleReferenceCaptureTest" \
             --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerTest" \
-            --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerFixtureTest"
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerFixtureTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerGoldenTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleSyncRealWorldTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleRateAwareAlignerTest"
 
       - name: Build benchmark APKs
         run: ./gradlew :app:assembleFullBenchmark

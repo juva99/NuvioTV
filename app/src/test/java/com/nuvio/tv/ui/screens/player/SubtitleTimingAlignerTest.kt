@@ -142,6 +142,57 @@ class SubtitleTimingAlignerTest {
     }
 
     @Test
+    fun `rejects ambiguous periodic timing beyond the long reference threshold`() {
+        val target = List(1_300) { index ->
+            val startMs = index * 3_000L
+            SrtCue(startMs, startMs + 1_000L, "Target $index")
+        }
+        val reference = target.map { cue ->
+            cue.copy(startMs = cue.startMs + 500L, endMs = cue.endMs + 500L)
+        }
+
+        assertNull(SubtitleTimingAligner.align(reference, target))
+    }
+
+    @Test
+    fun `preserves a short well supported offset region that returns to the baseline`() {
+        val target = variableTimeline(1_300)
+        val reference = target.mapIndexed { index, cue ->
+            val offsetMs = if (index in 560 until 640) 32_000L else 2_000L
+            cue.copy(startMs = cue.startMs + offsetMs, endMs = cue.endMs + offsetMs)
+        }
+
+        val model = requireNotNull(SubtitleTimingAligner.align(reference, target))
+
+        assertTrue("expected a piecewise model, got ${model.segments}", model.segments.size >= 3)
+        assertTrue(model.segments.any { kotlin.math.abs(it.offsetMs - 2_000L) <= 500L })
+        assertTrue(model.segments.any { kotlin.math.abs(it.offsetMs - 32_000L) <= 500L })
+    }
+
+    @Test
+    fun `does not extrapolate a long middle capture across unsupported target edges`() {
+        val target = variableTimeline(1_800)
+        val middleReference = target.drop(350).take(1_100).map { cue ->
+            cue.copy(startMs = cue.startMs + 2_000L, endMs = cue.endMs + 2_000L)
+        }
+
+        assertNull(SubtitleTimingAligner.align(middleReference, target))
+    }
+
+    @Test
+    fun `accepts a long passive prefix capture beyond the sampling threshold`() {
+        val target = variableTimeline(1_800)
+        val prefixReference = target.take(1_100).map { cue ->
+            cue.copy(startMs = cue.startMs + 2_000L, endMs = cue.endMs + 2_000L)
+        }
+
+        val model = requireNotNull(SubtitleTimingAligner.align(prefixReference, target))
+
+        assertEquals(1, model.segments.size)
+        assertTrue(kotlin.math.abs(model.segments.single().offsetMs - 2_000L) <= 250L)
+    }
+
+    @Test
     fun `does not reuse a target cue for multiple reference landmarks`() {
         val target = timeline(0L, 80, 4_000L)
         val reference = target.flatMap { cue ->

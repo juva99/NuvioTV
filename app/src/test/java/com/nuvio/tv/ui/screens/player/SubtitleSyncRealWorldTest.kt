@@ -29,6 +29,8 @@ class SubtitleSyncRealWorldTest {
 
     private val reference by lazy { fixture("real-eng-reference.srt") }
     private val target by lazy { fixture("real-heb-target.srt") }
+    private val longReference by lazy { fixture("long-eng-reference-timings.srt") }
+    private val longTarget by lazy { fixture("long-heb-target-timings.srt") }
 
     // ---------------------------------------------------------------- baseline
 
@@ -38,6 +40,38 @@ class SubtitleSyncRealWorldTest {
         assertEquals(989, target.cues.size)
         assertTrue(reference.cues.last().startMs > 80 * 60_000L)
         assertTrue(target.cues.last().startMs > 80 * 60_000L)
+    }
+
+    @Test
+    fun `long timing fixtures preserve the real cue distributions and metadata edges`() {
+        assertEquals(2378, longReference.cues.size)
+        assertEquals(1743, longTarget.cues.size)
+        assertTrue(longReference.cues.last().startMs > 149 * 60_000L)
+        assertTrue(longTarget.cues.last().startMs > longReference.cues.last().startMs + 60_000L)
+    }
+
+    @Test
+    fun `syncs a long translated track with merged cues and trailing metadata as one offset`() {
+        val plan = requireNotNull(
+            SubtitleRateAwareAligner.align(longReference.cues, longTarget.cues)
+        )
+
+        assertEquals("an already matching timeline was rescaled", 1.0, plan.rateRatio, 0.0)
+        assertEquals("invented offset regions: ${plan.model.segments}", 1, plan.model.segments.size)
+        assertTrue(
+            "expected the observed approximately 1 second correction, got ${plan.model.segments.single()}",
+            plan.model.segments.single().offsetMs in 700L..1_500L
+        )
+        assertTrue("weak long-track confidence ${plan.confidence}", plan.confidence >= 0.70)
+
+        val rewritten = plan.rewrite(longTarget)
+        val offsetMs = plan.model.segments.single().offsetMs
+        assertEquals(longTarget.cues.size, rewritten.cues.size)
+        assertTrue(
+            rewritten.cues.zip(longTarget.cues).all { (after, before) ->
+                after.startMs - before.startMs == offsetMs
+            }
+        )
     }
 
     @Test
@@ -378,6 +412,20 @@ class SubtitleSyncRealWorldTest {
 
         println("[subtitle-sync] full movie alignment best of 3: ${elapsedMs}ms")
         assertTrue("alignment took ${elapsedMs}ms for a 1000 cue movie", elapsedMs < 4_000L)
+    }
+
+    @Test
+    fun `aligns a long unevenly segmented movie within the existing time budget`() {
+        SubtitleRateAwareAligner.align(longReference.cues, longTarget.cues) // warm up
+
+        val elapsedMs = (1..3).minOf {
+            val startNs = System.nanoTime()
+            SubtitleRateAwareAligner.align(longReference.cues, longTarget.cues)
+            (System.nanoTime() - startNs) / 1_000_000L
+        }
+
+        println("[subtitle-sync] long translated movie alignment best of 3: ${elapsedMs}ms")
+        assertTrue("alignment took ${elapsedMs}ms for the long movie pair", elapsedMs < 4_000L)
     }
 
     // ----------------------------------------------------------------- helpers

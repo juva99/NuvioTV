@@ -74,6 +74,17 @@ jobs:
             echo "NUVIO_RELEASE_STORE_PASSWORD=android"
           } >> "$GITHUB_ENV"
 
+      - name: Test subtitle synchronization
+        run: |
+          ./gradlew :app:testFullDebugUnitTest \
+            --tests "com.nuvio.tv.ui.screens.player.SrtDocumentTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleReferenceCaptureTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerFixtureTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerGoldenTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleSyncRealWorldTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleRateAwareAlignerTest"
+
       - name: Build fullDebug APK
         run: ./gradlew :app:assembleFullDebug --stacktrace
 
