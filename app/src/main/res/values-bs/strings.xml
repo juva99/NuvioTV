@@ -327,7 +327,7 @@
     <string name="supporters_contributors_donate_copy">Nuvio će ostati besplatan i open source. Ako želite podržati projekt, možete pomoći u pokrivanju vremena i infrastrukture koja stoji iza njega.</string>
     <string name="supporters_contributors_donate_button">Donirajte za Nuvio</string>
     <string name="supporters_contributors_qr_title">Skenirajte za donaciju</string>
-    <string name="supporters_contributors_qr_subtitle">Otvorite link na telefonu i podržite Nuvio putem Ko-fi.</string>
+    <string name="supporters_contributors_qr_subtitle">Otvorite link na telefonu kako biste podržali Nuvio.</string>
     <string name="supporters_contributors_qr_hint">Usmjerite kameru na QR kod ili koristite dugme ispod.</string>
     <string name="supporters_contributors_back_button">Nazad na detalje</string>
     <string name="supporters_tab">Podržavaoci</string>
@@ -465,13 +465,6 @@
     <string name="sub_org_none_desc">Prikaži titlove u zadanom redoslijedu rezultata addona.</string>
     <string name="sub_org_by_lang_desc">Grupiši titlove po jeziku.</string>
     <string name="sub_org_by_addon_desc">Grupiši titlove po izvoru addona.</string>
-    <string name="sub_startup_mode_title">Učitavanje Addon Titlova</string>
-    <string name="sub_startup_mode_fast">Brzo pokretanje</string>
-    <string name="sub_startup_mode_preferred">Preferirani jezici</string>
-    <string name="sub_startup_mode_all">Svi addon titlovi</string>
-    <string name="sub_startup_mode_fast_desc">Pokreni reprodukciju odmah. Odabir addon titlova može jednom ponovo učitati player.</string>
-    <string name="sub_startup_mode_preferred_desc">Unaprijed učitaj addon titlove prije reprodukcije i dodaj preferirane/sekundarne jezičke trackove.</string>
-    <string name="sub_startup_mode_all_desc">Unaprijed učitaj i dodaj sve addon titlove prije reprodukcije. Najsporije pokretanje.</string>
 
     <!-- PlaybackAutoPlaySettings -->
     <string name="autoplay_reuse_last_link">Ponovo Koristi Zadnji Link</string>

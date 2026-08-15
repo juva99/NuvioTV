@@ -78,12 +78,18 @@ internal fun PlayerRuntimeController.updateAvailableTracks(tracks: Tracks) {
                         if (!ambiguousCinemaTrack) {
                             frameRateProbeJob?.cancel()
                         }
-                        _uiState.update {
-                            it.copy(
-                                detectedFrameRateRaw = raw,
-                                detectedFrameRate = snapped,
-                                detectedFrameRateSource = FrameRateSource.TRACK
-                            )
+                        _uiState.update { currentState ->
+                            if (currentState.detectedFrameRateSource == FrameRateSource.PROBE &&
+                                currentState.detectedFrameRate > 0f
+                            ) {
+                                currentState
+                            } else {
+                                currentState.copy(
+                                    detectedFrameRateRaw = raw,
+                                    detectedFrameRate = snapped,
+                                    detectedFrameRateSource = FrameRateSource.TRACK
+                                )
+                            }
                         }
                     }
                     // Extract video codec, resolution, and bitrate for stream info
@@ -171,7 +177,7 @@ internal fun PlayerRuntimeController.updateAvailableTracks(tracks: Tracks) {
         } else {
             bestVideoTrackSupport
         }
-        currentVideoTrackIsLikelyVc1 = isLikelyVc1VideoFormat(
+        currentVideoTrackIsLikelyVc1 = Vc1VideoFormatHeuristics.isLikelyVc1(
             sampleMimeType = effectiveVideoFormat.sampleMimeType,
             codecs = effectiveVideoFormat.codecs,
             label = effectiveVideoFormat.label
@@ -286,12 +292,17 @@ internal fun PlayerRuntimeController.updateAvailableTracks(tracks: Tracks) {
         selectedAudioIndex = restoredIndex
     }
 
-    _uiState.update {
-        it.copy(
+    _uiState.update { state ->
+        val finalSubtitleIndex = when {
+            state.selectedAddonSubtitle != null -> -1
+            selectedSubtitleIndex >= 0 -> selectedSubtitleIndex
+            else -> state.selectedSubtitleTrackIndex
+        }
+        state.copy(
             audioTracks = audioTracks,
             subtitleTracks = subtitleTracks,
             selectedAudioTrackIndex = selectedAudioIndex,
-            selectedSubtitleTrackIndex = selectedSubtitleIndex
+            selectedSubtitleTrackIndex = finalSubtitleIndex
         )
     }
     updateAudioControlAvailability(audioTracks, selectedAudioIndex)
@@ -315,29 +326,6 @@ internal fun PlayerRuntimeController.updateAvailableTracks(tracks: Tracks) {
     }
     tryAutoSelectPreferredSubtitleFromAvailableTracks()
     maybeAdjustLibassPipelineForTracks(tracks)
-}
-
-private fun isLikelyVc1VideoFormat(
-    sampleMimeType: String?,
-    codecs: String?,
-    label: String?
-): Boolean {
-    // MIME type check — this is the authoritative signal
-    if (sampleMimeType?.equals(MimeTypes.VIDEO_VC1, ignoreCase = true) == true) {
-        return true
-    }
-
-    val haystack = listOfNotNull(codecs, label)
-        .joinToString(" ")
-        .lowercase(Locale.ROOT)
-
-    // Explicit VC1 codec identifiers only — no bare "vc1" substring match
-    // to avoid matching "avc1" (H.264) or "hvc1" (HEVC)
-    return haystack.contains("wvc1") ||
-            haystack.contains("vc-1") ||
-            haystack.contains("wmv3") ||
-            // Match "vc1" only as a whole token (bounded by non-alphanumeric or start/end)
-            Regex("(?<![a-z0-9])vc1(?![a-z0-9])").containsMatchIn(haystack)
 }
 
 private fun formatSupportRank(@C.FormatSupport formatSupport: Int): Int {
@@ -1037,6 +1025,7 @@ internal fun PlayerRuntimeController.applyPersistedTrackPreference(
                         autoSubtitleSelected = true
                         selectSubtitleTrack(index)
                         updatedSubtitleIndex = index
+                        updatedPending = updatedPending.copy(subtitle = null)
                     } else {
                         Log.d(PlayerRuntimeController.TAG, "TRACK_PREF restore: internal subtitle index=$index already selected, keeping for pipeline restart")
                         autoSubtitleSelected = true
@@ -1601,12 +1590,28 @@ private fun audioMatchesSubtitleTargetForForced(audioTrack: TrackInfo, target: S
 }
 
 internal fun PlayerRuntimeController.tryAutoSelectPreferredSubtitleFromAvailableTracks() {
-    if (autoSubtitleSelected) return
-
+    if (isUserExplicitSubtitleSelection) {
+        Log.d(PlayerRuntimeController.TAG, "AUTO_SUB stop: user explicitly selected current subtitle")
+        return
+    }
     val state = _uiState.value
     val preferredTargets = subtitleLanguageTargets()
-    val selectedAudioTrack = selectedAudioTrackForSubtitleMatching(state)
     val primaryTarget = preferredTargets.firstOrNull()
+
+    if (autoSubtitleSelected) {
+        val currentSelectedLang = when {
+            state.selectedAddonSubtitle != null -> state.selectedAddonSubtitle?.lang
+            state.selectedSubtitleTrackIndex >= 0 -> state.subtitleTracks.getOrNull(state.selectedSubtitleTrackIndex)?.language
+            else -> null
+        }
+        val isPrimarySatisfied = primaryTarget != null && currentSelectedLang != null &&
+            PlayerSubtitleUtils.matchesLanguageCode(currentSelectedLang, primaryTarget)
+        val hasBetterAddonMatch = !isPrimarySatisfied && primaryTarget != null &&
+            state.addonSubtitles.any { PlayerSubtitleUtils.matchesLanguageCode(it.lang, primaryTarget) }
+
+        if (!hasBetterAddonMatch) return
+    }
+    val selectedAudioTrack = selectedAudioTrackForSubtitleMatching(state)
     val useForcedSubtitles = state.subtitleStyle.useForcedSubtitles
     val forcedTarget = when {
         !useForcedSubtitles -> null

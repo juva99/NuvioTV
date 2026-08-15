@@ -6,6 +6,7 @@ import com.nuvio.tv.LocaleCache
 import com.nuvio.tv.R
 import com.nuvio.tv.domain.model.CatalogRow
 import com.nuvio.tv.domain.model.Collection
+import com.nuvio.tv.domain.model.PLACEHOLDER_IMAGE_URL
 import com.nuvio.tv.domain.model.stableItemKey
 import com.nuvio.tv.ui.util.asStable
 import com.nuvio.tv.ui.util.localizedForAppLocale
@@ -267,12 +268,12 @@ internal fun buildModernHomePresentation(
                             title = "",
                             subtitle = null,
                             // Dummy URL triggers shimmer instead of MonochromePosterPlaceholder
-                            imageUrl = "placeholder://empty",
+                            imageUrl = PLACEHOLDER_IMAGE_URL,
                             heroPreview = HeroPreview(
                                 title = "", logo = null, description = null,
                                 contentTypeText = null, yearText = null, imdbText = null,
                                 genres = com.nuvio.tv.ui.util.StableList(emptyList()), poster = null, backdrop = null,
-                                imageUrl = "placeholder://empty"
+                                imageUrl = PLACEHOLDER_IMAGE_URL
                             ),
                             payload = ModernPayload.Catalog(
                                 focusKey = "placeholder_${homeRow.catalogKey}_$i",

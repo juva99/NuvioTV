@@ -6,16 +6,24 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.nuvio.tv.core.profile.ProfileManager
+import com.nuvio.tv.data.simkl.SimklAnimeIdPreference
 import com.nuvio.tv.domain.model.LibrarySourceMode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import javax.inject.Inject
 import javax.inject.Singleton
 
 enum class WatchProgressSource {
     TRAKT,
+    SIMKL,
     NUVIO_SYNC;
 
     companion object {
@@ -52,6 +60,8 @@ class TraktSettingsDataStore @Inject constructor(
     private fun store(profileId: Int = profileManager.activeProfileId.value) =
         factory.get(profileId, FEATURE)
 
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private val continueWatchingDaysCapKey = intPreferencesKey("continue_watching_days_cap")
     private val dismissedNextUpKeysKey = stringSetPreferencesKey("dismissed_next_up_keys")
     private val showUnairedNextUpKey = booleanPreferencesKey("show_unaired_next_up")
@@ -60,6 +70,7 @@ class TraktSettingsDataStore @Inject constructor(
     private val watchProgressSourceKey = stringPreferencesKey("watch_progress_source")
     private val librarySourceModeKey = stringPreferencesKey("library_source_mode")
     private val moreLikeThisSourceKey = stringPreferencesKey("more_like_this_source")
+    private val simklAnimeIdPreferenceKey = stringPreferencesKey("simkl_anime_id_preference")
 
     val continueWatchingDaysCap: Flow<Int> = profileManager.activeProfileId.flatMapLatest { pid ->
         factory.get(pid, FEATURE).data.map { prefs ->
@@ -96,11 +107,11 @@ class TraktSettingsDataStore @Inject constructor(
         }
     }
 
-    val watchProgressSource: Flow<WatchProgressSource> = profileManager.activeProfileId.flatMapLatest { pid ->
+    val watchProgressSource: StateFlow<WatchProgressSource> = profileManager.activeProfileId.flatMapLatest { pid ->
         factory.get(pid, FEATURE).data.map { prefs ->
             WatchProgressSource.fromStorage(prefs[watchProgressSourceKey])
         }
-    }
+    }.stateIn(scope, SharingStarted.Eagerly, DEFAULT_WATCH_PROGRESS_SOURCE)
 
     suspend fun setContinueWatchingDaysCap(days: Int) {
         store().edit { prefs ->
@@ -189,6 +200,18 @@ class TraktSettingsDataStore @Inject constructor(
     suspend fun setMoreLikeThisSource(source: MoreLikeThisSourcePreference) {
         store().edit { prefs ->
             prefs[moreLikeThisSourceKey] = source.name
+        }
+    }
+
+    val simklAnimeIdPreference: Flow<SimklAnimeIdPreference> = profileManager.activeProfileId.flatMapLatest { pid ->
+        factory.get(pid, FEATURE).data.map { prefs ->
+            SimklAnimeIdPreference.fromStorage(prefs[simklAnimeIdPreferenceKey])
+        }
+    }
+
+    suspend fun setSimklAnimeIdPreference(preference: SimklAnimeIdPreference) {
+        store().edit { prefs ->
+            prefs[simklAnimeIdPreferenceKey] = preference.name
         }
     }
 }

@@ -3,6 +3,8 @@ package com.nuvio.tv.core.di
 import com.nuvio.tv.BuildConfig
 import com.nuvio.tv.core.auth.TransientAuthRefreshException
 import com.nuvio.tv.core.auth.shouldRetryAuthRefreshResponse
+import com.nuvio.tv.data.local.ServerConfigurationStore
+import com.nuvio.tv.domain.model.ServerConfiguration
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -14,11 +16,12 @@ import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.createSupabaseClient
 import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.postgrest.postgrest
-import io.github.jan.supabase.realtime.Realtime
 import io.ktor.client.plugins.HttpResponseValidator
 import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.statement.request
 import io.ktor.http.HttpHeaders
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import javax.inject.Singleton
 
 @Module
@@ -27,12 +30,20 @@ object SupabaseModule {
 
     @Provides
     @Singleton
+    fun provideActiveServerConfiguration(
+        configurationStore: ServerConfigurationStore
+    ): ServerConfiguration = configurationStore.loadActive()
+
+    @Provides
+    @Singleton
     @OptIn(SupabaseInternal::class)
-    fun provideSupabaseClient(): SupabaseClient {
+    fun provideSupabaseClient(
+        serverConfiguration: ServerConfiguration
+    ): SupabaseClient = runBlocking(Dispatchers.IO) {
         val userAgent = "NuvioTV/${BuildConfig.VERSION_NAME.ifBlank { "dev" }}"
-        return createSupabaseClient(
-            supabaseUrl = BuildConfig.SUPABASE_URL,
-            supabaseKey = BuildConfig.SUPABASE_ANON_KEY
+        createSupabaseClient(
+            supabaseUrl = serverConfiguration.backendUrl,
+            supabaseKey = serverConfiguration.publishableKey
         ) {
             httpConfig {
                 defaultRequest {
@@ -62,9 +73,9 @@ object SupabaseModule {
                 enableLifecycleCallbacks = false
             }
             install(Postgrest)
-            install(Realtime)
         }
     }
+
 
     @Provides
     @Singleton

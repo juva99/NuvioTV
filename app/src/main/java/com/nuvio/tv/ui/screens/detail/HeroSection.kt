@@ -36,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -177,7 +178,9 @@ fun HeroContentSection(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .animateContentSize(animationSpec = tween(600))
+                .animateContentSize(
+                    animationSpec = tween(600)
+                )
                 .padding(start = NuvioTheme.spacing.xxxl, end = NuvioTheme.spacing.xxxl, bottom = NuvioTheme.spacing.lg),
             verticalArrangement = Arrangement.Bottom
         ) {
@@ -236,12 +239,7 @@ fun HeroContentSection(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         PlayButton(
-                            text = nextToWatch?.displayText ?: when {
-                                nextEpisode != null && nextEpisode.season != null && nextEpisode.episode != null ->
-                                    stringResource(R.string.hero_play_episode, nextEpisode.season, nextEpisode.episode)
-                                nextEpisode != null -> stringResource(R.string.hero_play)
-                                else -> stringResource(R.string.hero_play)
-                            },
+                            text = nextToWatch?.displayText,
                             onClick = onPlayClick,
                             onLongPress = onPlayLongPress,
                             focusRequester = playButtonFocusRequester,
@@ -322,7 +320,7 @@ fun HeroContentSection(
                     // pressing OK opens the full, scrollable text overlay.
                     meta.description?.let { description ->
                         var descriptionFocused by remember { mutableStateOf(false) }
-                        var descriptionTruncated by remember(description) { mutableStateOf(false) }
+                        var descriptionTruncated by rememberSaveable(description) { mutableStateOf(false) }
                         val descriptionInteraction = remember { MutableInteractionSource() }
                         // Inset of the focus highlight; offset back by the same amount so the text
                         // stays left-aligned with the rest of the hero while the highlight gets
@@ -337,7 +335,12 @@ fun HeroContentSection(
                                     if (descriptionTruncated) {
                                         Modifier
                                             .offset(x = -highlightInset)
-                                            .onFocusChanged { descriptionFocused = it.isFocused }
+                                            .onFocusChanged {
+                                                descriptionFocused = it.isFocused
+                                                if (it.isFocused) {
+                                                    onHeroActionFocused()
+                                                }
+                                            }
                                             .background(
                                                 color = if (descriptionFocused) {
                                                     Color.White.copy(alpha = 0.10f)
@@ -345,6 +348,15 @@ fun HeroContentSection(
                                                     Color.Transparent
                                                 },
                                                 shape = RoundedCornerShape(8.dp)
+                                            )
+                                            .then(
+                                                if (playButtonFocusRequester != null) {
+                                                    Modifier.focusProperties {
+                                                        up = playButtonFocusRequester
+                                                    }
+                                                } else {
+                                                    Modifier
+                                                }
                                             )
                                             .clickable(
                                                 interactionSource = descriptionInteraction,
@@ -399,7 +411,7 @@ fun HeroContentSection(
 @OptIn(ExperimentalTvMaterial3Api::class, ExperimentalComposeUiApi::class)
 @Composable
 private fun PlayButton(
-    text: String,
+    text: String?,
     onClick: () -> Unit,
     onLongPress: (() -> Unit)? = null,
     focusRequester: FocusRequester? = null,
@@ -484,17 +496,29 @@ private fun PlayButton(
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm)
+            horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.sm),
+            modifier = Modifier.animateContentSize(
+                animationSpec = tween(
+                    durationMillis = NuvioMotion.tokens.durations.fast,
+                    easing = NuvioMotion.tokens.easings.standard
+                )
+            )
         ) {
             Icon(
                 painter = playPainter,
                 contentDescription = null,
                 modifier = Modifier.size(18.dp)
             )
-            Text(
-                text = text,
-                style = MaterialTheme.typography.labelLarge
-            )
+            AnimatedVisibility(
+                visible = text != null,
+                enter = fadeIn(animationSpec = tween(NuvioMotion.tokens.durations.fast)),
+                exit = fadeOut(animationSpec = tween(NuvioMotion.tokens.durations.quick))
+            ) {
+                Text(
+                    text = text ?: "",
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
         }
     }
 }
