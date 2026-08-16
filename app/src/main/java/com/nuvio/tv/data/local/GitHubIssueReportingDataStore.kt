@@ -13,6 +13,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import org.json.JSONObject
 import java.nio.charset.StandardCharsets
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -33,9 +34,16 @@ data class GitHubIssueReportingSettings(
     val tokenConfigured: Boolean = false
 )
 
+data class GitHubIssueTokenData(
+    val accessToken: String,
+    val refreshToken: String? = null,
+    val accessTokenExpiresAtMs: Long? = null,
+    val refreshTokenExpiresAtMs: Long? = null
+)
+
 @Singleton
 class GitHubIssueReportingDataStore @Inject constructor(
-    @param:ApplicationContext context: Context
+    @ApplicationContext private val context: Context
 ) {
     private val dataStore = context.githubIssueReportingDataStore
     private val tokenStore = EncryptedGitHubTokenStore(context)
@@ -66,7 +74,31 @@ class GitHubIssueReportingDataStore @Inject constructor(
             return
         }
 
-        tokenStore.write(normalized)
+        tokenStore.write(GitHubIssueTokenData(accessToken = normalized))
+        dataStore.edit { preferences ->
+            preferences[tokenConfiguredKey] = true
+        }
+    }
+
+    suspend fun setOAuthTokens(
+        accessToken: String,
+        refreshToken: String?,
+        accessTokenExpiresAtMs: Long?,
+        refreshTokenExpiresAtMs: Long?
+    ) {
+        val normalizedAccessToken = accessToken.trim()
+        if (normalizedAccessToken.isBlank()) {
+            error("GitHub OAuth access token is empty")
+        }
+
+        tokenStore.write(
+            GitHubIssueTokenData(
+                accessToken = normalizedAccessToken,
+                refreshToken = refreshToken?.trim()?.takeIf { it.isNotBlank() },
+                accessTokenExpiresAtMs = accessTokenExpiresAtMs,
+                refreshTokenExpiresAtMs = refreshTokenExpiresAtMs
+            )
+        )
         dataStore.edit { preferences ->
             preferences[tokenConfiguredKey] = true
         }
@@ -77,10 +109,15 @@ class GitHubIssueReportingDataStore @Inject constructor(
         dataStore.edit { preferences ->
             preferences[tokenConfiguredKey] = false
             preferences[enabledKey] = false
+            preferences.remove(lastFingerprintKey)
+            preferences.remove(lastReportedAtKey)
+            preferences.remove(lastIssueUrlKey)
         }
     }
 
-    fun readToken(): String? = tokenStore.read()
+    fun readTokenData(): GitHubIssueTokenData? = tokenStore.read()
+
+    fun readToken(): String? = readTokenData()?.accessToken
 
     suspend fun wasRecentlyReported(fingerprint: String, nowMs: Long): Boolean {
         val preferences = dataStore.data.first()
@@ -114,17 +151,23 @@ private class EncryptedGitHubTokenStore(
         load(null)
     }
 
-    fun write(token: String) {
+    fun write(data: GitHubIssueTokenData) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        val ciphertext = cipher.doFinal(token.toByteArray(StandardCharsets.UTF_8))
+        val plaintext = JSONObject().apply {
+            put("access_token", data.accessToken)
+            data.refreshToken?.let { put("refresh_token", it) }
+            data.accessTokenExpiresAtMs?.let { put("access_token_expires_at_ms", it) }
+            data.refreshTokenExpiresAtMs?.let { put("refresh_token_expires_at_ms", it) }
+        }.toString()
+        val ciphertext = cipher.doFinal(plaintext.toByteArray(StandardCharsets.UTF_8))
         val editor = preferences.edit()
             .putString(CIPHERTEXT_KEY, Base64.encodeToString(ciphertext, Base64.NO_WRAP))
             .putString(IV_KEY, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
         check(editor.commit()) { "Unable to persist GitHub issue token" }
     }
 
-    fun read(): String? {
+    fun read(): GitHubIssueTokenData? {
         val encodedCiphertext = preferences.getString(CIPHERTEXT_KEY, null)
         val encodedIv = preferences.getString(IV_KEY, null)
         if (encodedCiphertext == null && encodedIv == null) return null
@@ -138,10 +181,11 @@ private class EncryptedGitHubTokenStore(
             getOrCreateKey(),
             GCMParameterSpec(GCM_TAG_LENGTH_BITS, Base64.decode(encodedIv, Base64.NO_WRAP))
         )
-        return String(
+        val plaintext = String(
             cipher.doFinal(Base64.decode(encodedCiphertext, Base64.NO_WRAP)),
             StandardCharsets.UTF_8
         )
+        return decode(plaintext)
     }
 
     fun clear() {
@@ -174,6 +218,30 @@ private class EncryptedGitHubTokenStore(
                 .build()
         )
         return generator.generateKey()
+    }
+
+    private fun decode(plaintext: String): GitHubIssueTokenData {
+        val normalized = plaintext.trim()
+        if (!normalized.startsWith('{')) {
+            // Preserve tokens written by the original manual-token implementation.
+            return GitHubIssueTokenData(accessToken = normalized)
+        }
+
+        val json = JSONObject(normalized)
+        val accessToken = json.optString("access_token").trim()
+        if (accessToken.isBlank()) {
+            error("Stored GitHub issue token has no access token")
+        }
+        return GitHubIssueTokenData(
+            accessToken = accessToken,
+            refreshToken = json.optString("refresh_token")
+                .trim()
+                .takeIf { it.isNotBlank() },
+            accessTokenExpiresAtMs = json.optLong("access_token_expires_at_ms")
+                .takeIf { it > 0L },
+            refreshTokenExpiresAtMs = json.optLong("refresh_token_expires_at_ms")
+                .takeIf { it > 0L }
+        )
     }
 
     private companion object {

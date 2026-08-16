@@ -11,6 +11,7 @@ import com.nuvio.tv.data.remote.api.AuthDiagnosticReportApi
 import com.nuvio.tv.data.remote.api.DonationsApi
 import com.nuvio.tv.data.remote.api.GitHubReleaseApi
 import com.nuvio.tv.data.remote.api.GitHubIssueApi
+import com.nuvio.tv.data.remote.api.GitHubOAuthApi
 import com.nuvio.tv.data.remote.api.TraktApi
 import com.nuvio.tv.data.remote.api.TrailerApi
 import com.nuvio.tv.data.remote.api.IntroDbApi
@@ -511,6 +512,24 @@ object NetworkModule {
     @Singleton
     fun provideGitHubIssueApi(@Named("githubIssues") retrofit: Retrofit): GitHubIssueApi =
         retrofit.create(GitHubIssueApi::class.java)
+
+    @Provides
+    @Singleton
+    @Named("githubAuth")
+    fun provideGitHubAuthRetrofit(
+        @Named("githubIssues") okHttpClient: OkHttpClient,
+        moshi: Moshi
+    ): Retrofit =
+        Retrofit.Builder()
+            .baseUrl("https://github.com/")
+            .client(okHttpClient)
+            .addConverterFactory(MoshiConverterFactory.create(moshi))
+            .build()
+
+    @Provides
+    @Singleton
+    fun provideGitHubOAuthApi(@Named("githubAuth") retrofit: Retrofit): GitHubOAuthApi =
+        retrofit.create(GitHubOAuthApi::class.java)
 
     @Provides
     @Singleton

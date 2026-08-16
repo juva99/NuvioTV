@@ -67,6 +67,7 @@ import com.nuvio.tv.R
 import com.nuvio.tv.data.local.Dv7HandlingMode
 import com.nuvio.tv.data.local.InternalPlayerEngine
 import com.nuvio.tv.domain.model.ExperienceMode
+import com.nuvio.tv.ui.screens.addon.QrCodeOverlay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -841,6 +842,7 @@ fun AdvancedSettingsContent(
     if (showGitHubIssueTokenDialog) {
         GitHubIssueReportingTokenDialog(
             tokenConfigured = uiState.githubIssueTokenConfigured,
+            githubAuthorizationAvailable = uiState.githubIssueAuthorizationAvailable,
             onSave = { token ->
                 viewModel.onEvent(
                     AdvancedSettingsEvent.SetGitHubIssueToken(
@@ -854,8 +856,41 @@ fun AdvancedSettingsContent(
                 viewModel.onEvent(AdvancedSettingsEvent.ClearGitHubIssueToken)
                 showGitHubIssueTokenDialog = false
             },
+            onConnectWithGitHub = {
+                showGitHubIssueTokenDialog = false
+                viewModel.onEvent(AdvancedSettingsEvent.StartGitHubIssueAuthorization)
+            },
             onDismiss = { showGitHubIssueTokenDialog = false }
         )
+    }
+
+    when (val authorizationState = uiState.githubIssueAuthorization) {
+        GitHubIssueAuthorizationState.Idle -> Unit
+        is GitHubIssueAuthorizationState.AwaitingApproval -> {
+            QrCodeOverlay(
+                qrBitmap = authorizationState.qrBitmap,
+                serverUrl = authorizationState.verificationUri,
+                instruction = stringResource(
+                    R.string.github_issue_authorization_instruction,
+                    authorizationState.userCode
+                ),
+                onClose = {
+                    viewModel.onEvent(AdvancedSettingsEvent.CancelGitHubIssueAuthorization)
+                },
+                qrSize = 280.dp
+            )
+        }
+        else -> {
+            GitHubIssueAuthorizationStatusDialog(
+                state = authorizationState,
+                onRetry = {
+                    viewModel.onEvent(AdvancedSettingsEvent.StartGitHubIssueAuthorization)
+                },
+                onDismiss = {
+                    viewModel.onEvent(AdvancedSettingsEvent.CancelGitHubIssueAuthorization)
+                }
+            )
+        }
     }
 }
 

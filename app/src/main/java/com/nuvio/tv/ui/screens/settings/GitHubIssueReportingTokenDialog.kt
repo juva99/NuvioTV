@@ -42,8 +42,10 @@ import com.nuvio.tv.ui.theme.NuvioTheme
 @Composable
 internal fun GitHubIssueReportingTokenDialog(
     tokenConfigured: Boolean,
+    githubAuthorizationAvailable: Boolean,
     onSave: (String) -> Unit,
     onClear: () -> Unit,
+    onConnectWithGitHub: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var value by remember { mutableStateOf("") }
@@ -68,7 +70,13 @@ internal fun GitHubIssueReportingTokenDialog(
     NuvioDialog(
         onDismiss = onDismiss,
         title = stringResource(R.string.github_issue_token_dialog_title),
-        subtitle = stringResource(R.string.github_issue_token_dialog_subtitle),
+        subtitle = stringResource(
+            if (githubAuthorizationAvailable) {
+                R.string.github_issue_token_dialog_subtitle
+            } else {
+                R.string.github_issue_token_dialog_unavailable_subtitle
+            }
+        ),
         width = 700.dp
     ) {
         Card(
@@ -147,6 +155,12 @@ internal fun GitHubIssueReportingTokenDialog(
                 text = stringResource(R.string.action_cancel),
                 onClick = onDismiss
             )
+            SettingsDialogActionButton(
+                text = stringResource(R.string.github_issue_connect_button),
+                onClick = onConnectWithGitHub,
+                primary = true,
+                enabled = githubAuthorizationAvailable
+            )
             if (tokenConfigured) {
                 SettingsDialogActionButton(
                     text = stringResource(R.string.action_clear),
@@ -156,7 +170,6 @@ internal fun GitHubIssueReportingTokenDialog(
             SettingsDialogActionButton(
                 text = stringResource(R.string.action_save),
                 onClick = save,
-                primary = true,
                 enabled = value.isNotBlank()
             )
         }

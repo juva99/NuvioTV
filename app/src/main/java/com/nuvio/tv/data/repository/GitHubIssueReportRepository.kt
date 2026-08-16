@@ -18,7 +18,9 @@ data class SubtitleSyncReferenceInput(
     val name: String,
     val language: String?,
     val sourceMimeType: String,
-    val cueCount: Int
+    val cueCount: Int,
+    val firstCueMs: Long? = null,
+    val lastCueMs: Long? = null
 )
 
 data class SubtitleSyncFailureReportInput(
@@ -42,12 +44,16 @@ data class SubtitleSyncFailureReportInput(
     val streamAddonName: String?,
     val failureStage: String,
     val failureReason: String,
-    val referenceTracks: List<SubtitleSyncReferenceInput>
+    val referenceTracks: List<SubtitleSyncReferenceInput>,
+    val subtitleCueCount: Int? = null,
+    val subtitleFirstCueMs: Long? = null,
+    val subtitleLastCueMs: Long? = null
 )
 
 @Singleton
 class GitHubIssueReportRepository @Inject constructor(
     private val githubIssueApi: GitHubIssueApi,
+    private val githubIssueAuthorizationRepository: GitHubIssueAuthorizationRepository,
     private val settingsStore: GitHubIssueReportingDataStore
 ) {
     private val submitMutex = Mutex()
@@ -64,10 +70,9 @@ class GitHubIssueReportRepository @Inject constructor(
                     )
                 }
 
-                val token = settingsStore.readToken()?.trim()?.takeIf { it.isNotBlank() }
-                    ?: return@withLock Result.failure(
-                        IllegalStateException("A GitHub issue token is not configured")
-                    )
+                val token = githubIssueAuthorizationRepository.accessToken().getOrElse {
+                    return@withLock Result.failure(it)
+                }
 
                 val nowMs = System.currentTimeMillis()
                 val fingerprint = subtitleSyncFailureFingerprint(input)
@@ -123,12 +128,18 @@ internal fun buildSubtitleSyncIssuePayload(
         appendLine()
         appendLine("- App version: `${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})`")
         appendLine("- Failure stage: `${input.failureStage.cleanText(120) ?: "unknown"}`")
-        appendLine("- Failure reason: ${input.failureReason.cleanText(1_000) ?: "Unknown error"}")
+        appendLine(
+            "- Failure reason: `${input.failureReason.cleanDiagnosticText(1_000) ?: "Unknown error"}`"
+        )
         appendLine()
         appendLine("### Subtitle")
         appendLine("- Subtitle ID: `${input.subtitleId.cleanText(200) ?: "unknown"}`")
         appendLine("- Subtitle language: `${input.subtitleLanguage.cleanText(40) ?: "unknown"}`")
         appendLine("- Subtitle addon: `${input.subtitleAddonName.cleanText(160) ?: "unknown"}`")
+        appendLine("- Subtitle cue count: `${input.subtitleCueCount ?: "unknown"}`")
+        appendLine(
+            "- Subtitle timeline: `${timelineText(input.subtitleFirstCueMs, input.subtitleLastCueMs)}`"
+        )
         appendLine("- Subtitle used: ${safeSubtitleUrl?.let { "<$it>" } ?: "unavailable"}")
         appendLine()
         appendLine("### Played file")
@@ -154,12 +165,13 @@ internal fun buildSubtitleSyncIssuePayload(
                     "- `${track.name.cleanText(160) ?: "unnamed"}` " +
                         "(${track.language.cleanText(40) ?: "unknown"}, " +
                         "${track.sourceMimeType.cleanText(80) ?: "unknown"}, " +
-                        "${track.cueCount.coerceAtLeast(0)} cues)"
+                        "${track.cueCount.coerceAtLeast(0)} cues, " +
+                        "timeline=${timelineText(track.firstCueMs, track.lastCueMs)})"
                 )
             }
         }
         appendLine()
-        appendLine("_Subtitle URLs are stripped of query parameters when they look like credentials._")
+        appendLine("_Subtitle URL query parameters are removed before publishing._")
     }
 
     return GitHubIssueCreateRequestDto(
@@ -169,12 +181,34 @@ internal fun buildSubtitleSyncIssuePayload(
 }
 
 internal fun subtitleSyncFailureFingerprint(input: SubtitleSyncFailureReportInput): String {
+    val referenceEvidence = input.referenceTracks
+        .sortedWith(
+            compareBy<SubtitleSyncReferenceInput> { it.name }
+                .thenBy { it.language }
+                .thenBy { it.sourceMimeType }
+                .thenBy { it.firstCueMs }
+                .thenBy { it.lastCueMs }
+        )
+        .joinToString("|") { track ->
+            listOf(
+                track.name.cleanText(160).orEmpty(),
+                track.language.cleanText(40).orEmpty(),
+                track.sourceMimeType.cleanText(80).orEmpty(),
+                track.cueCount.coerceAtLeast(0).toString(),
+                track.firstCueMs?.toString().orEmpty(),
+                track.lastCueMs?.toString().orEmpty()
+            ).joinToString(":")
+        }
     val normalized = listOf(
         sanitizeSubtitleUrl(input.subtitleUrl).orEmpty(),
         input.playedFileInfoHash.cleanText(160).orEmpty(),
         input.filename.cleanText(240).orEmpty(),
         input.failureStage.cleanText(120).orEmpty(),
-        input.failureReason.cleanText(240).orEmpty()
+        input.failureReason.cleanDiagnosticText(240).orEmpty(),
+        input.subtitleCueCount?.toString().orEmpty(),
+        input.subtitleFirstCueMs?.toString().orEmpty(),
+        input.subtitleLastCueMs?.toString().orEmpty(),
+        referenceEvidence
     ).joinToString("\u001f")
     val digest = MessageDigest.getInstance("SHA-256")
         .digest(normalized.toByteArray(Charsets.UTF_8))
@@ -191,42 +225,44 @@ private fun sanitizeSubtitleUrl(rawUrl: String): String? {
     val scheme = parsed.scheme?.takeIf { it.isNotBlank() } ?: return null
     val host = parsed.host?.takeIf { it.isNotBlank() } ?: return null
     val authority = if (parsed.port in 1..65_535) "$host:${parsed.port}" else host
-    val query = parsed.rawQuery?.takeUnless(::containsCredentialQueryParameter)
     return buildString {
         append(scheme)
         append("://")
         append(authority)
         append(parsed.rawPath.orEmpty())
-        if (!query.isNullOrBlank()) {
-            append('?')
-            append(query)
-        }
     }
 }
-
-private fun containsCredentialQueryParameter(query: String): Boolean =
-    query.split('&').any { parameter ->
-        parameter.substringBefore('=')
-            .replace('-', '_')
-            .lowercase()
-            .let { key ->
-                key.contains("token") ||
-                    key.contains("auth") ||
-                    key.contains("api_key") ||
-                    key.contains("apikey") ||
-                    key.contains("secret") ||
-                    key.contains("password") ||
-                    key == "key" ||
-                    key.contains("signature") ||
-                    key == "sig"
-            }
-    }
 
 private fun String?.cleanText(maxLength: Int): String? =
     this?.trim()
         ?.replace(Regex("\\s+"), " ")
+        ?.replace('`', '\'')
         ?.takeIf { it.isNotBlank() }
         ?.take(maxLength)
 
+private fun String?.cleanDiagnosticText(maxLength: Int): String? {
+    var value = cleanText(maxLength) ?: return null
+    value = DIAGNOSTIC_URL_PATTERN.replace(value) { match ->
+        sanitizeSubtitleUrl(match.value) ?: "[redacted URL]"
+    }
+    value = SENSITIVE_VALUE_PATTERN.replace(value) { match ->
+        "${match.groupValues[1]}=[redacted]"
+    }
+    return value.take(maxLength)
+}
+
+private fun timelineText(firstCueMs: Long?, lastCueMs: Long?): String =
+    if (firstCueMs != null && lastCueMs != null) {
+        "$firstCueMs..$lastCueMs ms"
+    } else {
+        "unknown"
+    }
+
 private const val MAX_REFERENCE_TRACKS = 12
 private const val MAX_ISSUE_BODY_LENGTH = 60_000
+
+private val DIAGNOSTIC_URL_PATTERN = Regex("""https?://[^\s<>"'`]+""", RegexOption.IGNORE_CASE)
+private val SENSITIVE_VALUE_PATTERN = Regex(
+    """\b(authorization|proxy-authorization|cookie|set-cookie|token|access[_-]?token|refresh[_-]?token|api[_-]?key|secret|password|signature|sig|hmac)\b\s*[:=]\s*(?:(?:Bearer|Basic)\s+)?\S+""",
+    RegexOption.IGNORE_CASE
+)

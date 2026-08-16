@@ -82,6 +82,7 @@ jobs:
             echo "NUVIO_VERSION_CODE=${{ inputs.version_code }}"
             echo "NUVIO_GITHUB_OWNER=${{ github.repository_owner }}"
             echo "NUVIO_GITHUB_REPO=${{ github.event.repository.name }}"
+            echo "GITHUB_ISSUE_CLIENT_ID=${{ vars.GITHUB_ISSUE_CLIENT_ID }}"
             echo "NUVIO_UPDATE_PRERELEASE_PREFIX=v0.7.17-beta-subtitle-sync."
           } >> "$GITHUB_ENV"
 
@@ -94,7 +95,8 @@ jobs:
             --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerFixtureTest" \
             --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerGoldenTest" \
             --tests "com.nuvio.tv.ui.screens.player.SubtitleSyncRealWorldTest" \
-            --tests "com.nuvio.tv.ui.screens.player.SubtitleRateAwareAlignerTest"
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleRateAwareAlignerTest" \
+            --tests "com.nuvio.tv.data.repository.GitHubIssueReportRepositoryTest"
 
       - name: Build benchmark APKs
         run: ./gradlew :app:assembleFullBenchmark

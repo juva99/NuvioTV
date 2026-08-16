@@ -70,6 +70,13 @@ val doviStaticLibPath = resolveProperty(devProperties, localProperties, "DOVI_LI
 val doviIncludeDirPath = resolveProperty(devProperties, localProperties, "DOVI_LIBDOVI_INCLUDE_DIR")
 val doviPrebuiltRootPath = resolveProperty(devProperties, localProperties, "DOVI_LIBDOVI_PREBUILT_ROOT")
 val sponsorNames = resolveProperty(devProperties, localProperties, "SPONSOR_NAMES", "ragmehos.")
+val githubIssueClientId = resolveProperty(devProperties, localProperties, "GITHUB_ISSUE_CLIENT_ID")
+val githubIssueRepositoryId = resolveProperty(
+    devProperties,
+    localProperties,
+    "GITHUB_ISSUE_REPOSITORY_ID",
+    "1302898206"
+)
 val appVersionName = env("NUVIO_VERSION_NAME") ?: "0.8.4-beta"
 val appVersionCode = env("NUVIO_VERSION_CODE")?.toIntOrNull() ?: 1045
 val sentryDsn = providers.environmentVariable("SENTRY_DSN").orNull?.trim()?.takeIf { it.isNotBlank() }
@@ -168,12 +175,22 @@ android {
         buildConfigField(
             "String",
             "GITHUB_ISSUE_OWNER",
-            buildConfigString(localProperties.getProperty("GITHUB_ISSUE_OWNER", "juva99"))
+            buildConfigString(
+                resolveProperty(devProperties, localProperties, "GITHUB_ISSUE_OWNER", "juva99")
+            )
         )
         buildConfigField(
             "String",
             "GITHUB_ISSUE_REPO",
-            buildConfigString(localProperties.getProperty("GITHUB_ISSUE_REPO", "NuvioTV"))
+            buildConfigString(
+                resolveProperty(devProperties, localProperties, "GITHUB_ISSUE_REPO", "NuvioTV")
+            )
+        )
+        buildConfigField("String", "GITHUB_ISSUE_CLIENT_ID", buildConfigString(githubIssueClientId))
+        buildConfigField(
+            "String",
+            "GITHUB_ISSUE_REPOSITORY_ID",
+            buildConfigString(githubIssueRepositoryId)
         )
     }
 
