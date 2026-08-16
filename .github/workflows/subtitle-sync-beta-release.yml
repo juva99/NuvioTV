@@ -82,7 +82,7 @@ jobs:
             echo "NUVIO_VERSION_CODE=${{ inputs.version_code }}"
             echo "NUVIO_GITHUB_OWNER=${{ github.repository_owner }}"
             echo "NUVIO_GITHUB_REPO=${{ github.event.repository.name }}"
-            echo "GITHUB_ISSUE_CLIENT_ID=${{ vars.GITHUB_ISSUE_CLIENT_ID }}"
+            echo "GITHUB_ISSUE_CLIENT_ID=${{ vars.NUVIO_GITHUB_ISSUE_CLIENT_ID }}"
             echo "NUVIO_UPDATE_PRERELEASE_PREFIX=v0.7.17-beta-subtitle-sync."
           } >> "$GITHUB_ENV"
 

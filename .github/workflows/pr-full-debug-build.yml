@@ -72,7 +72,7 @@ jobs:
             echo "NUVIO_RELEASE_KEY_ALIAS=androiddebugkey"
             echo "NUVIO_RELEASE_KEY_PASSWORD=android"
             echo "NUVIO_RELEASE_STORE_PASSWORD=android"
-            echo "GITHUB_ISSUE_CLIENT_ID=${{ vars.GITHUB_ISSUE_CLIENT_ID }}"
+            echo "GITHUB_ISSUE_CLIENT_ID=${{ vars.NUVIO_GITHUB_ISSUE_CLIENT_ID }}"
           } >> "$GITHUB_ENV"
 
       - name: Test subtitle synchronization
