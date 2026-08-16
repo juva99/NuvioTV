@@ -17,6 +17,7 @@ import com.nuvio.tv.data.local.DeviceLocalPlayerPreferences
 import com.nuvio.tv.data.local.StreamLinkCacheDataStore
 import com.nuvio.tv.data.local.StreamBadgeSettingsDataStore
 import com.nuvio.tv.data.repository.ParentalGuideRepository
+import com.nuvio.tv.data.repository.GitHubIssueReportRepository
 import com.nuvio.tv.data.repository.SkipIntroRepository
 import com.nuvio.tv.data.repository.TraktEpisodeMappingService
 import com.nuvio.tv.domain.repository.AddonRepository
@@ -66,6 +67,7 @@ class PlayerViewModel @Inject constructor(
     private val directDebridStreamPreparer: DirectDebridStreamPreparer,
     private val streamBadgePresentation: com.nuvio.tv.core.streams.StreamBadgePresentation,
     private val playbackIssueReportRepository: com.nuvio.tv.data.repository.PlaybackIssueReportRepository,
+    private val githubIssueReportRepository: GitHubIssueReportRepository,
     private val externalPlaybackTracker: com.nuvio.tv.core.player.ExternalPlaybackTracker,
     private val subtitleFileCache: com.nuvio.tv.core.player.SubtitleFileCache,
     savedStateHandle: SavedStateHandle
@@ -107,6 +109,7 @@ class PlayerViewModel @Inject constructor(
         directDebridStreamPreparer = directDebridStreamPreparer,
         streamBadgePresentation = streamBadgePresentation,
         playbackIssueReportRepository = playbackIssueReportRepository,
+        githubIssueReportRepository = githubIssueReportRepository,
         savedStateHandle = savedStateHandle,
         scope = viewModelScope
     )

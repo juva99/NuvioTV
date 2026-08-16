@@ -10,6 +10,7 @@ import com.nuvio.tv.data.remote.api.ArmApi
 import com.nuvio.tv.data.remote.api.AuthDiagnosticReportApi
 import com.nuvio.tv.data.remote.api.DonationsApi
 import com.nuvio.tv.data.remote.api.GitHubReleaseApi
+import com.nuvio.tv.data.remote.api.GitHubIssueApi
 import com.nuvio.tv.data.remote.api.TraktApi
 import com.nuvio.tv.data.remote.api.TrailerApi
 import com.nuvio.tv.data.remote.api.IntroDbApi
@@ -470,6 +471,46 @@ object NetworkModule {
     @Singleton
     fun provideGitHubReleaseApi(@Named("github") retrofit: Retrofit): GitHubReleaseApi =
         retrofit.create(GitHubReleaseApi::class.java)
+
+    @Provides
+    @Singleton
+    @Named("githubIssues")
+    fun provideGitHubIssueOkHttpClient(): OkHttpClient =
+        OkHttpClient.Builder()
+            .dns(IPv4FirstDns())
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                val version = BuildConfig.VERSION_NAME.ifBlank { "dev" }
+                chain.proceed(
+                    chain.request().newBuilder()
+                        .header("User-Agent", "Nuvio/$version")
+                        .build()
+                )
+            }
+            .addInterceptor(HttpLoggingInterceptor().apply {
+                level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC
+                else HttpLoggingInterceptor.Level.NONE
+            })
+            .build()
+
+    @Provides
+    @Singleton
+    @Named("githubIssues")
+    fun provideGitHubIssueRetrofit(
+        @Named("githubIssues") okHttpClient: OkHttpClient,
+        moshi: Moshi
+    ): Retrofit =
+        Retrofit.Builder()
+            .baseUrl("https://api.github.com/")
+            .client(okHttpClient)
+            .addConverterFactory(MoshiConverterFactory.create(moshi))
+            .build()
+
+    @Provides
+    @Singleton
+    fun provideGitHubIssueApi(@Named("githubIssues") retrofit: Retrofit): GitHubIssueApi =
+        retrofit.create(GitHubIssueApi::class.java)
 
     @Provides
     @Singleton

@@ -380,6 +380,7 @@ fun AdvancedSettingsContent(
     val networkListState = rememberLazyListState()
     var showExperienceModeConfirmation by remember { mutableStateOf(false) }
     var showSentryDialog by remember { mutableStateOf(false) }
+    var showGitHubIssueTokenDialog by remember { mutableStateOf(false) }
     Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         state = networkListState,
@@ -509,6 +510,36 @@ fun AdvancedSettingsContent(
                             )
                         )
                     }
+                )
+                SettingsToggleRow(
+                    title = stringResource(R.string.advanced_subtitle_sync_issue_reports),
+                    subtitle = stringResource(R.string.advanced_subtitle_sync_issue_reports_subtitle),
+                    checked = uiState.subtitleSyncIssueReportsEnabled,
+                    onToggle = {
+                        if (uiState.subtitleSyncIssueReportsEnabled) {
+                            viewModel.onEvent(
+                                AdvancedSettingsEvent.SetSubtitleSyncIssueReportsEnabled(false)
+                            )
+                        } else if (uiState.githubIssueTokenConfigured) {
+                            viewModel.onEvent(
+                                AdvancedSettingsEvent.SetSubtitleSyncIssueReportsEnabled(true)
+                            )
+                        } else {
+                            showGitHubIssueTokenDialog = true
+                        }
+                    }
+                )
+                SettingsActionRow(
+                    title = stringResource(R.string.advanced_github_issue_token),
+                    subtitle = stringResource(R.string.advanced_github_issue_token_subtitle),
+                    value = stringResource(
+                        if (uiState.githubIssueTokenConfigured) {
+                            R.string.advanced_github_issue_token_configured
+                        } else {
+                            R.string.advanced_github_issue_token_not_configured
+                        }
+                    ),
+                    onClick = { showGitHubIssueTokenDialog = true }
                 )
             }
         }
@@ -804,6 +835,26 @@ fun AdvancedSettingsContent(
                 )
             },
             onDismiss = { showSentryDialog = false }
+        )
+    }
+
+    if (showGitHubIssueTokenDialog) {
+        GitHubIssueReportingTokenDialog(
+            tokenConfigured = uiState.githubIssueTokenConfigured,
+            onSave = { token ->
+                viewModel.onEvent(
+                    AdvancedSettingsEvent.SetGitHubIssueToken(
+                        token = token,
+                        enableAfterSave = !uiState.githubIssueTokenConfigured
+                    )
+                )
+                showGitHubIssueTokenDialog = false
+            },
+            onClear = {
+                viewModel.onEvent(AdvancedSettingsEvent.ClearGitHubIssueToken)
+                showGitHubIssueTokenDialog = false
+            },
+            onDismiss = { showGitHubIssueTokenDialog = false }
         )
     }
 }

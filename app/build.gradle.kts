@@ -165,6 +165,16 @@ android {
         // In-app updater (GitHub Releases)
         buildConfigField("String", "GITHUB_OWNER", "\"tapframe\"")
         buildConfigField("String", "GITHUB_REPO", "\"NuvioTV\"")
+        buildConfigField(
+            "String",
+            "GITHUB_ISSUE_OWNER",
+            buildConfigString(localProperties.getProperty("GITHUB_ISSUE_OWNER", "juva99"))
+        )
+        buildConfigField(
+            "String",
+            "GITHUB_ISSUE_REPO",
+            buildConfigString(localProperties.getProperty("GITHUB_ISSUE_REPO", "NuvioTV"))
+        )
     }
 
     flavorDimensions += "distribution"

@@ -34,6 +34,7 @@ import com.nuvio.tv.data.local.StreamAutoPlayMode
 import com.nuvio.tv.data.repository.ParentalGuideRepository
 import com.nuvio.tv.data.repository.PlaybackIssueErrorInput
 import com.nuvio.tv.data.repository.PlaybackIssueReportRepository
+import com.nuvio.tv.data.repository.GitHubIssueReportRepository
 import com.nuvio.tv.data.repository.SkipIntroRepository
 import com.nuvio.tv.data.repository.SkipInterval
 import com.nuvio.tv.data.repository.EpisodeMappingEntry
@@ -89,6 +90,7 @@ class PlayerRuntimeController(
     internal val directDebridStreamPreparer: DirectDebridStreamPreparer,
     internal val streamBadgePresentation: com.nuvio.tv.core.streams.StreamBadgePresentation,
     internal val playbackIssueReportRepository: PlaybackIssueReportRepository,
+    internal val githubIssueReportRepository: GitHubIssueReportRepository,
     savedStateHandle: SavedStateHandle,
     internal val scope: CoroutineScope
 ) {

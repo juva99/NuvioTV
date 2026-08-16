@@ -1,6 +1,9 @@
 package com.nuvio.tv.ui.screens.player
 
+import android.util.Log
 import com.nuvio.tv.R
+import com.nuvio.tv.data.repository.SubtitleSyncFailureReportInput
+import com.nuvio.tv.data.repository.SubtitleSyncReferenceInput
 import com.nuvio.tv.domain.model.Subtitle
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -138,6 +141,8 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
     val playerAtStart = _exoPlayer
     automaticSubtitleSyncJob = scope.launch {
         val syncJob = coroutineContext[Job]
+        var failureStage = "starting"
+        var referenceTracks = emptyList<SubtitleReferenceTrack>()
         _uiState.update {
             it.copy(
                 automaticSubtitleSyncRunning = true,
@@ -145,6 +150,7 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
             )
         }
         try {
+            failureStage = "scanning embedded subtitle references"
             _uiState.update {
                 it.copy(automaticSubtitleSyncMessage = context.getString(R.string.subtitle_automatic_sync_scanning_index))
             }
@@ -161,7 +167,7 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                 scanner.close()
                 if (activeSubtitleReferenceScanner === scanner) activeSubtitleReferenceScanner = null
             }
-            val referenceTracks = subtitleReferenceCueStore.snapshot()
+            referenceTracks = subtitleReferenceCueStore.snapshot()
                 .filter { it.cues.size >= SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES }
             if (referenceTracks.isEmpty()) {
                 val message = when (scanResult) {
@@ -172,12 +178,14 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                 }
                 error(context.getString(message))
             }
+            failureStage = "downloading addon subtitle"
             val targetDocument = withContext(subtitleSyncDispatcher) {
                 SrtDocument.parse(downloadSubtitleBody(selectedSubtitle.url))
             }
             if (targetDocument.cues.size < 12) {
                 error(context.getString(R.string.subtitle_automatic_sync_invalid_srt))
             }
+            failureStage = "aligning subtitle timelines"
             val plan = withContext(subtitleSyncDispatcher) {
                 referenceTracks.mapNotNull { track ->
                     SubtitleRateAwareAligner.align(track.cues, targetDocument.cues)?.let { plan ->
@@ -193,6 +201,7 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                 _uiState.value.selectedAddonSubtitle?.autoSyncTrackKey() != selectedSubtitle.autoSyncTrackKey()) {
                 return@launch
             }
+            failureStage = "writing synchronized subtitle"
             val rewritten = withContext(subtitleSyncDispatcher) { plan.rewrite(targetDocument) }
             if (rewritten.cues.isEmpty()) {
                 error(context.getString(R.string.subtitle_automatic_sync_low_confidence))
@@ -223,13 +232,20 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            val failureMessage = e.message
+                ?: context.getString(R.string.subtitle_automatic_sync_failed)
             _uiState.update {
                 it.copy(
                     automaticSubtitleSyncRunning = false,
-                    automaticSubtitleSyncMessage = e.message
-                        ?: context.getString(R.string.subtitle_automatic_sync_failed)
+                    automaticSubtitleSyncMessage = failureMessage
                 )
             }
+            reportAutomaticSubtitleSyncFailure(
+                selectedSubtitle = selectedSubtitle,
+                failureStage = failureStage,
+                failureReason = failureMessage,
+                referenceTracks = referenceTracks
+            )
         } finally {
             if (automaticSubtitleSyncJob === syncJob) {
                 automaticSubtitleSyncJob = null
@@ -237,6 +253,58 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                 activeSubtitleReferenceScanner = null
                 _uiState.update { it.copy(automaticSubtitleSyncRunning = false) }
             }
+        }
+    }
+}
+
+private fun PlayerRuntimeController.reportAutomaticSubtitleSyncFailure(
+    selectedSubtitle: Subtitle,
+    failureStage: String,
+    failureReason: String,
+    referenceTracks: List<SubtitleReferenceTrack>
+) {
+    val report = SubtitleSyncFailureReportInput(
+        title = title,
+        contentName = contentName,
+        contentId = contentId,
+        contentType = contentType,
+        videoId = currentVideoId,
+        season = currentSeason,
+        episode = currentEpisode,
+        episodeTitle = currentEpisodeTitle,
+        releaseYear = year,
+        subtitleId = selectedSubtitle.id,
+        subtitleUrl = selectedSubtitle.url,
+        subtitleLanguage = selectedSubtitle.lang,
+        subtitleAddonName = selectedSubtitle.addonName,
+        playedFileInfoHash = currentInfoHash,
+        playedFileIndex = currentFileIdx,
+        filename = currentFilename,
+        streamName = currentStreamDescription ?: streamName,
+        streamAddonName = currentAddonName,
+        failureStage = failureStage,
+        failureReason = failureReason,
+        referenceTracks = referenceTracks.map { track ->
+            SubtitleSyncReferenceInput(
+                name = track.name,
+                language = track.language,
+                sourceMimeType = track.sourceMimeType,
+                cueCount = track.cues.size
+            )
+        }
+    )
+
+    scope.launch(Dispatchers.IO) {
+        if (!githubIssueReportRepository.isEnabled()) return@launch
+        val result = githubIssueReportRepository.submit(report)
+        result.onSuccess { issueUrl ->
+            Log.i(PlayerRuntimeController.TAG, "Automatic subtitle-sync issue created: $issueUrl")
+        }.onFailure { error ->
+            Log.w(
+                PlayerRuntimeController.TAG,
+                "Automatic subtitle-sync issue creation failed: ${error.message}",
+                error
+            )
         }
     }
 }

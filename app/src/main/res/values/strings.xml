@@ -524,6 +524,16 @@
     <string name="advanced_sentry_reports_subtitle">Send crash and ANR reports with safe context. On by default.</string>
     <string name="advanced_playback_issue_reports">Playback issue reports</string>
     <string name="advanced_playback_issue_reports_subtitle">Show report buttons during playback, long loading, and playback errors</string>
+    <string name="advanced_subtitle_sync_issue_reports">Automatic subtitle-sync issue reports</string>
+    <string name="advanced_subtitle_sync_issue_reports_subtitle">Create a GitHub issue when automatic subtitle sync fails. Reports include the subtitle link and played file infohash.</string>
+    <string name="advanced_github_issue_token">GitHub issue token</string>
+    <string name="advanced_github_issue_token_subtitle">Use a fine-grained token with Issues read and write access for the fork repository.</string>
+    <string name="advanced_github_issue_token_configured">Configured</string>
+    <string name="advanced_github_issue_token_not_configured">Not configured</string>
+    <string name="github_issue_token_dialog_title">GitHub issue token</string>
+    <string name="github_issue_token_dialog_subtitle">The token is encrypted on this device. Issue reports may publish subtitle URLs, file names, and infohashes to the fork repository GitHub issues.</string>
+    <string name="github_issue_token_dialog_placeholder">Paste a fine-grained GitHub token</string>
+    <string name="github_issue_token_dialog_replace_placeholder">Paste a replacement token</string>
     <string name="sentry_enable_dialog_title">Turn on crash reports?</string>
     <string name="sentry_enable_dialog_subtitle">Crash reports help identify device-specific failures without asking you to reproduce the issue with ADB logs.</string>
     <string name="sentry_disable_dialog_title">Turn off crash reports?</string>
