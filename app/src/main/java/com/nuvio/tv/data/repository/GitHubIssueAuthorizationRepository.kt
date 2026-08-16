@@ -5,6 +5,8 @@ import com.nuvio.tv.data.local.GitHubIssueReportingDataStore
 import com.nuvio.tv.data.remote.api.GitHubOAuthApi
 import com.nuvio.tv.data.remote.dto.GitHubOAuthTokenResponseDto
 import kotlinx.coroutines.CancellationException
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -12,9 +14,19 @@ data class GitHubDeviceAuthorizationSession(
     val deviceCode: String,
     val userCode: String,
     val verificationUri: String,
+    val verificationUriComplete: String,
     val expiresAtMs: Long,
     val intervalSeconds: Long
 )
+
+internal fun buildVerificationUriComplete(
+    verificationUri: String,
+    userCode: String
+): String {
+    val separator = if (verificationUri.contains('?')) '&' else '?'
+    val encodedUserCode = URLEncoder.encode(userCode, StandardCharsets.UTF_8.name())
+    return "$verificationUri${separator}user_code=$encodedUserCode"
+}
 
 sealed interface GitHubDevicePollResult {
     data object Pending : GitHubDevicePollResult
@@ -83,6 +95,10 @@ class GitHubIssueAuthorizationRepository @Inject constructor(
                     deviceCode = deviceCode,
                     userCode = userCode,
                     verificationUri = verificationUri,
+                    verificationUriComplete = buildVerificationUriComplete(
+                        verificationUri = verificationUri,
+                        userCode = userCode
+                    ),
                     expiresAtMs = System.currentTimeMillis() + expiresInSeconds * 1_000L,
                     intervalSeconds = intervalSeconds
                 )
@@ -146,8 +162,14 @@ class GitHubIssueAuthorizationRepository @Inject constructor(
                 )
                 else -> GitHubDevicePollResult.Failed(
                     code = body.error?.trim().takeIf { !it.isNullOrBlank() } ?: "unknown_error",
-                    message = body.errorDescription?.trim().takeIf { !it.isNullOrBlank() }
-                        ?: "GitHub authorization could not be completed"
+                    message = when (body.error?.trim()?.lowercase()) {
+                        "installation_missing_access" ->
+                            "Install the GitHub App on " +
+                                "${BuildConfig.GITHUB_ISSUE_OWNER}/${BuildConfig.GITHUB_ISSUE_REPO}, " +
+                                "then retry authorization."
+                        else -> body.errorDescription?.trim().takeIf { !it.isNullOrBlank() }
+                            ?: "GitHub authorization could not be completed"
+                    }
                 )
             }
         } catch (e: CancellationException) {

@@ -869,7 +869,7 @@ fun AdvancedSettingsContent(
         is GitHubIssueAuthorizationState.AwaitingApproval -> {
             QrCodeOverlay(
                 qrBitmap = authorizationState.qrBitmap,
-                serverUrl = authorizationState.verificationUri,
+                serverUrl = authorizationState.verificationUriComplete,
                 instruction = stringResource(
                     R.string.github_issue_authorization_instruction,
                     authorizationState.userCode

@@ -538,7 +538,7 @@
     <string name="github_issue_connect_button">Connect with GitHub (QR)</string>
     <string name="github_issue_authorization_title">Connect GitHub</string>
     <string name="github_issue_authorization_subtitle">Authorize the GitHub App installed on the fork with Issues write access. No token is shown on the TV.</string>
-    <string name="github_issue_authorization_instruction">Scan this QR code with your phone, open GitHub, and enter code %1$s.</string>
+    <string name="github_issue_authorization_instruction">Scan this QR code with your phone, open the URL in a web browser (not the GitHub app), and enter code %1$s if it is not filled automatically.</string>
     <string name="github_issue_authorization_starting">Preparing GitHub authorization...</string>
     <string name="github_issue_authorization_completing">Finishing GitHub authorization...</string>
     <string name="github_issue_authorization_success">GitHub is connected. Subtitle issue reporting is enabled.</string>

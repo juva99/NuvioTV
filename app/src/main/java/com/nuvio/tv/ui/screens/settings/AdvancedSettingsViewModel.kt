@@ -32,6 +32,7 @@ sealed interface GitHubIssueAuthorizationState {
     data class AwaitingApproval(
         val userCode: String,
         val verificationUri: String,
+        val verificationUriComplete: String,
         val qrBitmap: Bitmap,
         val expiresAtMs: Long
     ) : GitHubIssueAuthorizationState
@@ -188,13 +189,14 @@ class AdvancedSettingsViewModel @Inject constructor(
                     githubIssueAuthorizationRepository.requestDeviceAuthorization()
                 }.getOrThrow()
                 val qrBitmap = withContext(Dispatchers.Default) {
-                    QrCodeGenerator.generate(session.verificationUri, 420, margin = 1)
+                    QrCodeGenerator.generate(session.verificationUriComplete, 420, margin = 1)
                 }
                 _uiState.update {
                     it.copy(
                         githubIssueAuthorization = GitHubIssueAuthorizationState.AwaitingApproval(
                             userCode = session.userCode,
                             verificationUri = session.verificationUri,
+                            verificationUriComplete = session.verificationUriComplete,
                             qrBitmap = qrBitmap,
                             expiresAtMs = session.expiresAtMs
                         )
