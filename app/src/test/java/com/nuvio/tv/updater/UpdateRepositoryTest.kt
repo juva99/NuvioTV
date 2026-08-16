@@ -6,7 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class UpdateRepositoryTest {
-    private val prefix = "v0.7.17-beta-subtitle-sync."
+    private val prefix = "v0.8.4-beta-subtitle-sync."
 
     @Test
     fun `selects highest numbered matching prerelease`() {
@@ -25,7 +25,7 @@ class UpdateRepositoryTest {
                 listOf(
                     release("${prefix}7", draft = true),
                     release("${prefix}8", prerelease = false),
-                    release("v0.7.17-beta-other.9")
+                    release("v0.8.4-beta-other.9")
                 ),
                 prefix
             )
