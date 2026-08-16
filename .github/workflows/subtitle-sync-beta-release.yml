@@ -83,7 +83,7 @@ jobs:
             echo "NUVIO_GITHUB_OWNER=${{ github.repository_owner }}"
             echo "NUVIO_GITHUB_REPO=${{ github.event.repository.name }}"
             echo "GITHUB_ISSUE_CLIENT_ID=${{ vars.NUVIO_GITHUB_ISSUE_CLIENT_ID }}"
-            echo "NUVIO_UPDATE_PRERELEASE_PREFIX=v0.8.4-beta-subtitle-sync."
+            echo "NUVIO_UPDATE_PRERELEASE_PREFIX=subtitle-sync"
           } >> "$GITHUB_ENV"
 
       - name: Test subtitle synchronization

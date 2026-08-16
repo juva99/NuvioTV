@@ -1,6 +1,11 @@
 package com.nuvio.tv.updater
 
 internal object UpdateBannerPolicy {
+    fun shouldCheckAutomatically(
+        bannerEnabled: Boolean,
+        updateFeatureEnabled: Boolean
+    ): Boolean = bannerEnabled && updateFeatureEnabled
+
     fun shouldShow(
         isRemoteNewer: Boolean,
         force: Boolean,

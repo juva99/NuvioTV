@@ -7,6 +7,26 @@ import org.junit.Test
 class UpdateBannerPolicyTest {
 
     @Test
+    fun `automatic check is enabled for a build with the updater feature enabled`() {
+        assertTrue(
+            UpdateBannerPolicy.shouldCheckAutomatically(
+                bannerEnabled = true,
+                updateFeatureEnabled = true
+            )
+        )
+    }
+
+    @Test
+    fun `automatic check stays disabled when the updater feature is disabled`() {
+        assertFalse(
+            UpdateBannerPolicy.shouldCheckAutomatically(
+                bannerEnabled = true,
+                updateFeatureEnabled = false
+            )
+        )
+    }
+
+    @Test
     fun `automatic check shows a new update when the banner is enabled`() {
         assertTrue(
             UpdateBannerPolicy.shouldShow(

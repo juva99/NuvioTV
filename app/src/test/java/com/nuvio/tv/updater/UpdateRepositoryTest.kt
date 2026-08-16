@@ -19,6 +19,21 @@ class UpdateRepositoryTest {
     }
 
     @Test
+    fun `selects the newest subtitle sync release across app version prefixes`() {
+        val selected = selectLatestPrerelease(
+            listOf(
+                release("v0.7.17-beta-subtitle-sync.12"),
+                release("v0.8.4-beta-subtitle-sync.9"),
+                release("v0.8.4-beta-subtitle-sync.13"),
+                release("v0.8.3-beta-subtitle-sync.99")
+            ),
+            prefix
+        )
+
+        assertEquals("v0.8.4-beta-subtitle-sync.13", selected?.tagName)
+    }
+
+    @Test
     fun `ignores drafts stable releases and other prerelease channels`() {
         assertNull(
             selectLatestPrerelease(

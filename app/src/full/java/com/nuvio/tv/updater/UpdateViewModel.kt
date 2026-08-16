@@ -48,7 +48,11 @@ class UpdateViewModel @Inject constructor(
         viewModelScope.launch {
             val enabled = updatePreferences.updateBannerEnabled.first()
             _uiState.update { it.copy(updateBannerEnabled = enabled) }
-            if (enabled && !BuildConfig.IS_DEBUG_BUILD) {
+            if (UpdateBannerPolicy.shouldCheckAutomatically(
+                    bannerEnabled = enabled,
+                    updateFeatureEnabled = BuildConfig.IN_APP_UPDATE_DIALOG_ENABLED
+                )
+            ) {
                 checkForUpdates(force = false, showNoUpdateFeedback = false)
             }
         }
@@ -163,7 +167,11 @@ class UpdateViewModel @Inject constructor(
         }
         viewModelScope.launch {
             updatePreferences.setUpdateBannerEnabled(enabled)
-            if (enabled && changed && !BuildConfig.IS_DEBUG_BUILD) {
+            if (changed && UpdateBannerPolicy.shouldCheckAutomatically(
+                    bannerEnabled = enabled,
+                    updateFeatureEnabled = BuildConfig.IN_APP_UPDATE_DIALOG_ENABLED
+                )
+            ) {
                 checkForUpdates(force = false, showNoUpdateFeedback = false)
             }
         }

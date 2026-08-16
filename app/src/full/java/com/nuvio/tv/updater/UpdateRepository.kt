@@ -50,15 +50,35 @@ class UpdateRepository @Inject constructor(
     }
 }
 
+private const val SUBTITLE_SYNC_CHANNEL = "subtitle-sync"
+private val subtitleSyncTagPattern =
+    Regex("^v?\\d+\\.\\d+\\.\\d+-beta-subtitle-sync\\.\\d+$")
+
 internal fun selectLatestPrerelease(
     releases: List<GitHubReleaseDto>,
     prefix: String
-): GitHubReleaseDto? = releases.asSequence()
-    .filter { !it.draft && it.prerelease }
-    .mapNotNull { release ->
-        val tag = release.tagName.orEmpty()
-        val number = tag.removePrefix(prefix).toIntOrNull()
-        if (tag.startsWith(prefix) && number != null) release to number else null
+): GitHubReleaseDto? {
+    val candidates = releases.asSequence()
+        .filter { !it.draft && it.prerelease }
+
+    if (prefix.contains(SUBTITLE_SYNC_CHANNEL, ignoreCase = true)) {
+        return candidates
+            .filter { subtitleSyncTagPattern.matches(it.tagName.orEmpty()) }
+            .reduceOrNull { current, candidate ->
+                if (VersionUtils.isRemoteNewer(candidate.tagName, current.tagName)) {
+                    candidate
+                } else {
+                    current
+                }
+            }
     }
-    .maxByOrNull { it.second }
-    ?.first
+
+    return candidates
+        .mapNotNull { release ->
+            val tag = release.tagName.orEmpty()
+            val number = tag.removePrefix(prefix).toIntOrNull()
+            if (tag.startsWith(prefix) && number != null) release to number else null
+        }
+        .maxByOrNull { it.second }
+        ?.first
+}
