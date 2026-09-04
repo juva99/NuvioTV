@@ -99,6 +99,7 @@ jobs:
             --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerGoldenTest" \
             --tests "com.nuvio.tv.ui.screens.player.SubtitleSyncRealWorldTest" \
             --tests "com.nuvio.tv.ui.screens.player.SubtitleRateAwareAlignerTest" \
+            --tests "com.nuvio.tv.ui.screens.player.PlayerSubtitleRtlFixTest" \
             --tests "com.nuvio.tv.data.repository.GitHubIssueReportRepositoryTest"
 
       - name: Build benchmark APKs

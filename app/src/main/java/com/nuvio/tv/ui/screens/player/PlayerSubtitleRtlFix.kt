@@ -6,50 +6,65 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import androidx.media3.common.C
 import androidx.media3.common.text.Cue
-import androidx.media3.common.util.UnstableApi
 import androidx.media3.extractor.text.CuesWithTiming
 
 /**
- * RTL cue text normalization for [androidx.media3.ui.SubtitleView] (LTR layout container).
- *
- * Safe to run once at parse/load time; [fixCueText] is a no-op (identity) for non-RTL cues.
- * Plain [String] cues use [StringBuilder] (cheaper + JVM-testable); spanned cues keep spans.
+ * Gives RTL subtitle paragraphs an explicit direction, repairing legacy Hebrew visual punctuation
+ * only when the source provides evidence of that convention.
+ * Both embedded and sidecar cues use the same normalization; styled text retains its spans.
  */
 internal object PlayerSubtitleRtlFix {
 
-    fun fixCueText(cue: Cue, isBuiltInSubtitle: Boolean): Cue {
+    fun fixCueText(cue: Cue): Cue {
         val text = cue.text ?: return cue
-        if (!hasAnyRtlCharacter(text)) {
-            return cue
-        }
+        val fixed = fixText(text)
+        return if (fixed === text) cue else cue.buildUpon().setText(fixed).build()
+    }
 
-        // Arabic: wrap each physical line with RLE (\u202B) ... PDF (\u202C).
-        // This renders boundary punctuation and auto-wrapped lines as RTL in an LTR container.
-        if (containsArabic(text)) {
-            val fixed = wrapArabicLines(text)
-            if (fixed.contentEquals(text)) return cue
-            return cue.buildUpon().setText(fixed).build()
+    internal fun fixText(
+        text: CharSequence,
+        legacyHebrewPunctuation: Boolean = usesLegacyHebrewPunctuation(sequenceOf(text))
+    ): CharSequence {
+        var builder: Appendable? = null
+        var start = 0
+        for (end in 0..text.length) {
+            if (end != text.length && !isParagraphSeparator(text[end])) continue
+            val line = text.subSequence(start, end)
+            val needsEmbedding = isRtlParagraph(line) &&
+                !(line.firstOrNull() == '\u202B' && line.lastOrNull() == '\u202C')
+            if (needsEmbedding && builder == null) {
+                builder = if (text is Spanned) SpannableStringBuilder() else StringBuilder(text.length + 8)
+                builder.append(text.subSequence(0, start))
+            }
+            builder?.let { out ->
+                // An embedding keeps boundary punctuation with the RTL run even in an LTR
+                // container. Keep logical text and authored bidi controls intact.
+                if (needsEmbedding) out.append('\u202B')
+                out.append(
+                    if (needsEmbedding && legacyHebrewPunctuation) repairLegacyHebrewLine(line)
+                    else line
+                )
+                if (needsEmbedding) out.append('\u202C')
+                if (end < text.length) out.append(text[end])
+            }
+            start = end + 1
         }
-
-        // Hebrew / other RTL: punctuation boundary-swap method (span preserving when needed).
-        if (containsRtlChars(text)) {
-            val fixed = fixHebrewLines(text, isBuiltInSubtitle) ?: return cue
-            if (fixed.contentEquals(text)) return cue
-            return cue.buildUpon().setText(fixed).build()
+        return when (val result = builder) {
+            null -> text
+            is SpannableStringBuilder -> result
+            else -> result.toString()
         }
-
-        return cue
     }
 
     /**
-     * Applies [fixCueText] to every cue once. Returns the same list instance when nothing changes.
-     * Intended for sidecar parse (background thread), not the 100ms render ticker.
+     * Applies [fixCueText] once at parse/load time, not on the sidecar render ticker.
+     * Returns the original list when no cues change.
      */
-    fun fixTimedCues(
-        cues: List<CuesWithTiming>,
-        isBuiltInSubtitle: Boolean = false
-    ): List<CuesWithTiming> {
+    fun fixTimedCues(cues: List<CuesWithTiming>): List<CuesWithTiming> {
         if (cues.isEmpty()) return cues
+        val legacyHebrewPunctuation = usesLegacyHebrewPunctuation(
+            cues.asSequence().flatMap { it.cues.asSequence() }.mapNotNull { it.text }
+        )
         var anyChanged = false
         val out = ArrayList<CuesWithTiming>(cues.size)
         for (entry in cues) {
@@ -57,7 +72,13 @@ internal object PlayerSubtitleRtlFix {
             var modified: ArrayList<Cue>? = null
             for (i in entryCues.indices) {
                 val original = entryCues[i]
-                val fixed = fixCueText(original, isBuiltInSubtitle)
+                val text = original.text
+                val fixedText = text?.let { fixText(it, legacyHebrewPunctuation) }
+                val fixed = if (fixedText != null && fixedText !== text) {
+                    original.buildUpon().setText(fixedText).build()
+                } else {
+                    original
+                }
                 if (fixed !== original) {
                     if (modified == null) {
                         modified = ArrayList(entryCues.size)
@@ -90,274 +111,103 @@ internal object PlayerSubtitleRtlFix {
         return CuesWithTiming(cues, entry.startTimeUs, durationUs)
     }
 
-    private fun wrapArabicLines(text: CharSequence): CharSequence {
-        val preserveSpans = text is Spanned
-        val builder: Appendable = if (preserveSpans) SpannableStringBuilder() else StringBuilder(text.length + 8)
-        val lines = text.splitByNewlines()
-        for (i in lines.indices) {
-            if (i > 0) builder.append('\n')
-            // Clear existing directional markers -> prevents double wrapping (idempotent).
-            val line = lines[i].stripDirectionalWrap()
-            if (line.isEmpty()) {
-                builder.append(line)
-                continue
+    private fun isParagraphSeparator(char: Char): Boolean =
+        char == '\n' || char == '\r' || char == '\u2028' || char == '\u2029'
+
+    private fun usesLegacyHebrewPunctuation(texts: Sequence<CharSequence>): Boolean {
+        var legacyLines = 0
+        var logicalLines = 0
+        for (text in texts) {
+            for (line in text.split('\n', '\r', '\u2028', '\u2029')) {
+                if (!isUnmarkedHebrewLine(line)) continue
+                val core = line.trim().trim('"', '\'')
+                if (core.lastOrNull() in SENTENCE_PUNCTUATION) logicalLines++
+                // Leading ellipses can be intentional in logical subtitles; do not use them
+                // as evidence. Once a file's legacy convention is known, repair them as well.
+                if (core.firstOrNull() in SENTENCE_PUNCTUATION && !core.startsWith("..")) legacyLines++
             }
-            // Keep the trailing CR (paragraph separator) OUTSIDE of the embedding; otherwise
-            // it terminates the RLE run and leaves the PDF orphan.
-            val hasCr = line[line.length - 1] == '\r'
-            val core = if (hasCr) line.subSequence(0, line.length - 1) else line
-            if (core.isEmpty()) {
-                builder.append(line)
-                continue
-            }
-            builder.append('\u202B').append(core).append('\u202C')
-            if (hasCr) builder.append('\r')
         }
-        return finishBuilder(builder)
+        return legacyLines > 0 && legacyLines >= logicalLines * 4
     }
 
-    private fun fixHebrewLines(text: CharSequence, isBuiltInSubtitle: Boolean): CharSequence? {
-        val preserveSpans = text is Spanned
-        val builder: Appendable = if (preserveSpans) SpannableStringBuilder() else StringBuilder(text.length)
-        val lines = text.splitByNewlines()
-        var changed = false
-        for (i in lines.indices) {
-            if (i > 0) builder.append('\n')
-            val line = lines[i]
-            val fixed = if (isBuiltInSubtitle) {
-                moveLeadingRtlPunctuationToEndForBuiltIn(line, preserveSpans)
-            } else {
-                fixRtlPunctuationForLtr(line, preserveSpans)
+    private fun isUnmarkedHebrewLine(line: CharSequence): Boolean =
+        line.any { it in '\u0590'..'\u05FF' || it in '\uFB1D'..'\uFB4F' } &&
+            line.none {
+                it == '\u061C' || it == '\u200E' || it == '\u200F' ||
+                    it in '\u202A'..'\u202E' || it in '\u2066'..'\u2069'
+            } && isRtlParagraph(line)
+
+    private fun repairLegacyHebrewLine(line: CharSequence): CharSequence {
+        if (!isUnmarkedHebrewLine(line)) return line
+        val trimmed = line.trim()
+        if (trimmed.firstOrNull() == '-' || trimmed.lastOrNull() in SENTENCE_PUNCTUATION) return line
+        var start = 0
+        while (start < line.length && isBoundaryPunctuation(line[start])) start++
+        var end = line.length
+        while (end > start && isBoundaryPunctuation(line[end - 1])) end--
+        if (start == 0 && end == line.length) return line
+
+        val out: Appendable = if (line is Spanned) SpannableStringBuilder() else StringBuilder(line.length)
+        appendReversedBoundary(out, line, end, line.length)
+        out.append(line.subSequence(start, end))
+        appendReversedBoundary(out, line, 0, start)
+        return if (out is SpannableStringBuilder) out else out.toString()
+    }
+
+    private fun isBoundaryPunctuation(char: Char): Boolean =
+        char.isWhitespace() || char in ".,?!:;-'\u2013\u2014\u2026\"()[]{}"
+
+    private fun appendReversedBoundary(out: Appendable, line: CharSequence, start: Int, end: Int) {
+        for (index in end - 1 downTo start) {
+            val mirrored = when (line[index]) {
+                '(' -> ')'
+                ')' -> '('
+                '[' -> ']'
+                ']' -> '['
+                '{' -> '}'
+                '}' -> '{'
+                else -> line[index]
             }
-            if (fixed !== line && fixed.toString() != line.toString()) changed = true
-            builder.append(fixed)
+            val original = line.subSequence(index, index + 1)
+            out.append(
+                when {
+                    mirrored == line[index] -> original
+                    original is Spanned -> SpannableStringBuilder(original).replace(0, 1, mirrored.toString())
+                    else -> mirrored.toString()
+                }
+            )
         }
-        if (!changed) return null
-        return finishBuilder(builder)
     }
 
-    private fun finishBuilder(builder: Appendable): CharSequence = when (builder) {
-        is SpannableStringBuilder -> builder
-        is StringBuilder -> builder.toString()
-        else -> builder.toString()
-    }
+    private val SENTENCE_PUNCTUATION = setOf('.', ',', '!', '?', ':', ';')
 
-    private fun containsArabic(text: CharSequence): Boolean {
-        var i = 0
-        while (i < text.length) {
-            val codePoint = Character.codePointAt(text, i)
-            if (codePoint in 0x0600..0x06FF || // Arabic block
-                codePoint in 0x0750..0x077F || // Arabic Supplement
-                codePoint in 0x0870..0x08FF || // Arabic Extended
-                codePoint in 0xFB50..0xFDFF || // Arabic Presentation Forms-A
-                codePoint in 0xFE70..0xFEFF || // Arabic Presentation Forms-B
-                Character.getDirectionality(codePoint) == Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC
-            ) {
-                return true
-            }
-            i += Character.charCount(codePoint)
-        }
-        return false
-    }
-
-    private fun mirrorPunctuation(c: Char): Char = when (c) {
-        '(' -> ')'
-        ')' -> '('
-        else -> c
-    }
-
-    private fun appendMirroredReversed(
-        out: Appendable,
-        line: CharSequence,
-        from: Int,
-        toExclusive: Int
-    ) {
-        if (from >= toExclusive) return
-
-        fun isNumberSeparator(c: Char) = c == ',' || c == ':' || c == '.' || c == '-' || c == '/'
-
-        // 1. Split [from, toExclusive) into chunks: number-runs (digits + embedded , : .) stay together
-        val chunks = ArrayList<IntRange>()
-        var i = from
-        while (i < toExclusive) {
-            if (line[i].isDigit()) {
-                val start = i
-                i++
-                while (i < toExclusive) {
-                    if (line[i].isDigit()) {
-                        i++
-                    } else if (
-                        isNumberSeparator(line[i]) &&
-                        i + 1 < toExclusive &&
-                        line[i + 1].isDigit()
-                    ) {
-                        // separator sandwiched between digits, e.g. 16,300 / 10:50 / 1.23
-                        i++ // consume separator, loop will consume following digits
-                    } else {
-                        break
+    private fun isRtlParagraph(text: CharSequence): Boolean {
+        var index = 0
+        var isolateDepth = 0
+        while (index < text.length) {
+            val codePoint = Character.codePointAt(text, index)
+            val direction = Character.getDirectionality(codePoint)
+            when (direction) {
+                Character.DIRECTIONALITY_LEFT_TO_RIGHT_ISOLATE,
+                Character.DIRECTIONALITY_RIGHT_TO_LEFT_ISOLATE,
+                Character.DIRECTIONALITY_FIRST_STRONG_ISOLATE -> isolateDepth++
+                Character.DIRECTIONALITY_POP_DIRECTIONAL_ISOLATE ->
+                    isolateDepth = (isolateDepth - 1).coerceAtLeast(0)
+                else -> if (isolateDepth == 0) {
+                    // Isolated names/numbers do not determine the surrounding paragraph direction.
+                    when (direction) {
+                        Character.DIRECTIONALITY_RIGHT_TO_LEFT,
+                        Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC,
+                        Character.DIRECTIONALITY_RIGHT_TO_LEFT_EMBEDDING,
+                        Character.DIRECTIONALITY_RIGHT_TO_LEFT_OVERRIDE -> return true
+                        Character.DIRECTIONALITY_LEFT_TO_RIGHT,
+                        Character.DIRECTIONALITY_LEFT_TO_RIGHT_EMBEDDING,
+                        Character.DIRECTIONALITY_LEFT_TO_RIGHT_OVERRIDE -> return false
                     }
                 }
-                chunks.add(start until i) // whole number (with separators) as one chunk
-            } else {
-                chunks.add(i until i + 1) // single char chunk
-                i++
             }
-        }
-
-        // 2. Walk chunks back-to-front, but append each chunk's *contents* in original order
-        for (idx in chunks.indices.reversed()) {
-            val range = chunks[idx]
-            if (range.last - range.first + 1 > 1) {
-                // number run -> keep as-is, don't reverse the digits/separators themselves
-                out.append(line.subSequence(range.first, range.last + 1))
-            } else {
-                val c = line[range.first]
-                val m = mirrorPunctuation(c)
-                if (m != c) out.append(m) else out.append(line.subSequence(range.first, range.first + 1))
-            }
-        }
-    }
-
-    private fun fixRtlPunctuationForLtr(line: CharSequence, preserveSpans: Boolean): CharSequence {
-        if (line.isEmpty()) return line
-        val hasCr = line[line.length - 1] == '\r'
-        val end0 = if (hasCr) line.length - 1 else line.length
-        if (end0 == 0) return line
-
-        var start = 0
-        while (start < end0 && isRtlPunctuation(line[start], isEnd = false)) start++
-
-        var end = end0
-        while (end > start && isRtlPunctuation(line[end - 1], isEnd = true)) end--
-
-        if (start == 0 && end == end0) return line
-
-        val out: Appendable =
-            if (preserveSpans) SpannableStringBuilder() else StringBuilder(end0)
-        appendMirroredReversed(out, line, end, end0) // trailing punct/numbers -> front
-        out.append(line.subSequence(start, end)) // middle, untouched
-        appendMirroredReversed(out, line, 0, start) // leading punct/numbers -> end
-        if (hasCr) out.append('\r')
-        return finishBuilder(out)
-    }
-
-    private fun moveLeadingRtlPunctuationToEndForBuiltIn(
-        line: CharSequence,
-        preserveSpans: Boolean
-    ): CharSequence {
-        if (line.isEmpty()) return line
-        val hasCr = line[line.length - 1] == '\r'
-        val end0 = if (hasCr) line.length - 1 else line.length
-        if (end0 == 0) return line
-
-        var end = 0
-        while (end < end0 && line[end] in MOBILE_RTL_PUNCTUATION) end++
-        if (end == 0) return line
-
-        val out: Appendable =
-            if (preserveSpans) SpannableStringBuilder() else StringBuilder(end0)
-        out.append(line.subSequence(end, end0))
-            .append(line.subSequence(0, end))
-        if (hasCr) out.append('\r')
-        return finishBuilder(out)
-    }
-
-    // Clears existing directional control characters (idempotency + legacy RLM/LRE remnants).
-    private fun CharSequence.stripDirectionalWrap(): CharSequence {
-        val hasMarker = (0 until length).any { isDirectionalMark(this[it]) }
-        if (!hasMarker) return this
-        if (this !is Spanned) {
-            val sb = StringBuilder(length)
-            for (ch in this) {
-                if (!isDirectionalMark(ch)) sb.append(ch)
-            }
-            return sb.toString()
-        }
-        val sb = SpannableStringBuilder(this)
-        var k = 0
-        while (k < sb.length) {
-            if (isDirectionalMark(sb[k])) sb.delete(k, k + 1) else k++
-        }
-        return sb
-    }
-
-    private fun isDirectionalMark(c: Char): Boolean =
-        c == '\u202A' || c == '\u202B' || c == '\u202C' || // LRE / RLE / PDF
-            c == '\u200E' || c == '\u200F' // LRM / RLM
-
-    private fun CharSequence.splitByNewlines(): List<CharSequence> {
-        val result = mutableListOf<CharSequence>()
-        var start = 0
-        var i = 0
-        while (i < this.length) {
-            if (this[i] == '\n') {
-                result.add(this.subSequence(start, i))
-                start = i + 1
-            }
-            i++
-        }
-        result.add(this.subSequence(start, this.length))
-        return result
-    }
-
-    private fun isRtlPunctuation(ch: Char, isEnd: Boolean): Boolean {
-        if (isEnd && ch.isDigit()) return false
-        return ch in RTL_PUNCTUATION || ch.isWhitespace()
-    }
-
-    private fun containsRtlChars(text: CharSequence): Boolean {
-        var i = 0
-        while (i < text.length) {
-            val codePoint = Character.codePointAt(text, i)
-
-            // Direct Unicode range checks for Hebrew and Arabic scripts
-            if (codePoint in 0x0590..0x05FF || // Hebrew block (letters, points, punctuation)
-                codePoint in 0xFB1D..0xFB4F || // Hebrew Presentation Forms
-                codePoint in 0x0600..0x06FF || // Arabic block
-                codePoint in 0x0750..0x077F || // Arabic Supplement
-                codePoint in 0x0870..0x08FF || // Arabic Extended
-                codePoint in 0xFB50..0xFDFF || // Arabic Presentation Forms-A
-                codePoint in 0xFE70..0xFEFF // Arabic Presentation Forms-B
-            ) {
-                return true
-            }
-
-            val d = Character.getDirectionality(codePoint)
-            if (d == Character.DIRECTIONALITY_RIGHT_TO_LEFT ||
-                d == Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC ||
-                d == Character.DIRECTIONALITY_ARABIC_NUMBER
-            ) {
-                return true
-            }
-            i += Character.charCount(codePoint)
+            index += Character.charCount(codePoint)
         }
         return false
     }
-
-    private fun hasAnyRtlCharacter(text: CharSequence): Boolean {
-        var i = 0
-        val len = text.length
-        while (i < len) {
-            val codePoint = Character.codePointAt(text, i)
-            if (codePoint >= 0x0590) {
-                if (codePoint in 0x0590..0x08FF ||
-                    codePoint in 0xFB1D..0xFEFF
-                ) {
-                    return true
-                }
-                val d = Character.getDirectionality(codePoint)
-                if (d == Character.DIRECTIONALITY_RIGHT_TO_LEFT ||
-                    d == Character.DIRECTIONALITY_RIGHT_TO_LEFT_ARABIC ||
-                    d == Character.DIRECTIONALITY_ARABIC_NUMBER
-                ) {
-                    return true
-                }
-            }
-            i += Character.charCount(codePoint)
-        }
-        return false
-    }
-
-    private val RTL_PUNCTUATION = setOf('.', ',', '?', '!', '-', ':', ';', '…', ')', '(', '\'', '"') + ('0'..'9')
-    private val MOBILE_RTL_PUNCTUATION = setOf('.', ',', '?', '!', '-', ':', ';', '…', ')', '(')
 }
