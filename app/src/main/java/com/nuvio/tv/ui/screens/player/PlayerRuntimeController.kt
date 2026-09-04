@@ -15,6 +15,10 @@ import com.nuvio.tv.core.player.BitrateAwareLoadControl
 import com.nuvio.tv.core.player.LastPlaybackDiagnostics
 import com.nuvio.tv.core.debrid.DirectDebridResolver
 import com.nuvio.tv.core.debrid.DirectDebridStreamPreparer
+import com.nuvio.tv.core.cloud.CloudLibraryPlaybackContext
+import com.nuvio.tv.core.cloud.CloudLibraryPlaybackProgressStore
+import com.nuvio.tv.core.cloud.CloudLibraryPlaybackSessionStore
+import com.nuvio.tv.core.cloud.CloudLibraryRepository
 import com.nuvio.tv.core.plugin.PluginManager
 import com.nuvio.tv.core.tracking.TrackingMediaReference
 import com.nuvio.tv.core.tracking.TrackingScrobbleCoordinator
@@ -39,6 +43,7 @@ import com.nuvio.tv.data.repository.SkipIntroRepository
 import com.nuvio.tv.data.repository.SkipInterval
 import com.nuvio.tv.data.repository.EpisodeMappingEntry
 import com.nuvio.tv.data.repository.TraktEpisodeMappingService
+import com.nuvio.tv.domain.model.Subtitle
 import com.nuvio.tv.domain.model.Video
 import com.nuvio.tv.domain.model.WatchProgress
 import com.nuvio.tv.domain.repository.AddonRepository
@@ -47,7 +52,6 @@ import com.nuvio.tv.domain.repository.StreamRepository
 import com.nuvio.tv.domain.repository.WatchProgressRepository
 import androidx.media3.session.MediaSession
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -57,11 +61,12 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import com.nuvio.tv.core.util.withAppLocale
 import java.lang.ref.WeakReference
 import java.util.concurrent.atomic.AtomicLong
 
 class PlayerRuntimeController(
-    internal val context: Context,
+    context: Context,
     internal val watchProgressRepository: WatchProgressRepository,
     internal val metaRepository: MetaRepository,
     internal val streamRepository: StreamRepository,
@@ -88,14 +93,20 @@ class PlayerRuntimeController(
     internal val tmdbSettingsDataStore: com.nuvio.tv.data.local.TmdbSettingsDataStore,
     internal val directDebridResolver: DirectDebridResolver,
     internal val directDebridStreamPreparer: DirectDebridStreamPreparer,
+    internal val cloudLibraryRepository: CloudLibraryRepository,
+    internal val cloudPlaybackProgressStore: CloudLibraryPlaybackProgressStore,
+    internal val cloudPlaybackSessionStore: CloudLibraryPlaybackSessionStore,
     internal val streamBadgePresentation: com.nuvio.tv.core.streams.StreamBadgePresentation,
     internal val playbackIssueReportRepository: PlaybackIssueReportRepository,
     internal val githubIssueReportRepository: GitHubIssueReportRepository,
+    internal val tvRecommendationManager: com.nuvio.tv.core.recommendations.TvRecommendationManager,
+    internal val profileId: Int,
     savedStateHandle: SavedStateHandle,
     internal val scope: CoroutineScope
 ) {
 
-    internal val watchedWriteDispatcher = Dispatchers.IO.limitedParallelism(1)
+    /** Resolved once so every `context.getString(...)` here follows the app language. */
+    internal val context: Context = context.withAppLocale()
 
     companion object {
         internal const val TAG = "PlayerViewModel"
@@ -174,6 +185,7 @@ class PlayerRuntimeController(
     internal val launchStartedAtElapsedMs: Long? = navigationArgs.launchStartedAtMs
     internal val rememberedAudioLanguage: String? = navigationArgs.rememberedAudioLanguage
     internal val rememberedAudioName: String? = navigationArgs.rememberedAudioName
+    internal val cloudSessionToken: String? = navigationArgs.cloudSessionToken
     internal val mediaSourceFactory = PlayerMediaSourceFactory(context.applicationContext)
 
     internal var currentVideoHash: String? = navigationArgs.videoHash
@@ -193,6 +205,7 @@ class PlayerRuntimeController(
     internal var currentStreamResponseHeaders: Map<String, String> = emptyMap()
     internal var currentStreamMimeType: String?
     internal var currentHeaders: Map<String, String>
+    internal var streamSubtitles: List<Subtitle> = emptyList()
 
     init {
         val initialPlaybackRequest = PlayerMediaSourceFactory.normalizePlaybackRequest(
@@ -206,6 +219,8 @@ class PlayerRuntimeController(
             responseHeaders = currentStreamResponseHeaders
         )
         currentHeaders = initialPlaybackRequest.headers
+        streamSubtitles = StreamSidecarSubtitles.forUrl(initialStreamUrl)
+            .ifEmpty { StreamSidecarSubtitles.forUrl(currentStreamUrl) }
     }
 
     fun getCurrentStreamUrl(): String = currentStreamUrl
@@ -260,21 +275,61 @@ class PlayerRuntimeController(
     internal val _playbackTimeline = MutableStateFlow(PlaybackTimelineState())
     val playbackTimeline: StateFlow<PlaybackTimelineState> = _playbackTimeline.asStateFlow()
 
+    internal val liveWatchClock = LivePlaybackWatchClock()
+    internal var livePlaybackLatched: Boolean = false
+
     internal fun updatePlaybackTimeline(
         currentPosition: Long = _playbackTimeline.value.currentPosition,
         duration: Long = _playbackTimeline.value.duration,
-        bufferedPosition: Long = _playbackTimeline.value.bufferedPosition
+        bufferedPosition: Long = _playbackTimeline.value.bufferedPosition,
+        isLive: Boolean = _playbackTimeline.value.isLive,
+        watchedDurationMs: Long = _playbackTimeline.value.watchedDurationMs
     ) {
         _playbackTimeline.update {
             it.copy(
                 currentPosition = currentPosition.coerceAtLeast(0L),
                 duration = duration.coerceAtLeast(0L),
-                bufferedPosition = bufferedPosition.coerceAtLeast(0L)
+                bufferedPosition = bufferedPosition.coerceAtLeast(0L),
+                isLive = isLive,
+                watchedDurationMs = watchedDurationMs.coerceAtLeast(0L)
             )
         }
     }
 
+    internal fun publishPlaybackTimeline(
+        currentPosition: Long,
+        duration: Long,
+        bufferedPosition: Long,
+        playerReportsLive: Boolean,
+        isPlaying: Boolean
+    ) {
+        livePlaybackLatched = LivePlaybackUiPolicy.nextLiveLatch(
+            playerReportsLive = playerReportsLive,
+            previouslyLatched = livePlaybackLatched
+        )
+        val isLive = LivePlaybackUiPolicy.isLivePlayback(
+            playerReportsLive = playerReportsLive,
+            contentType = contentType,
+            latchedLive = livePlaybackLatched
+        )
+        val watched = liveWatchClock.watchedDurationMs(
+            isLive = isLive,
+            isPlaying = isPlaying,
+            nowElapsedMs = android.os.SystemClock.elapsedRealtime()
+        )
+        updatePlaybackTimeline(
+            currentPosition = currentPosition,
+            duration = duration,
+            bufferedPosition = bufferedPosition,
+            isLive = isLive,
+            watchedDurationMs = watched
+        )
+    }
+
     internal fun resetPlaybackTimeline() {
+        livePlaybackLatched = false
+        liveWatchClock.reset()
+        pendingPreviewSeekPosition = null
         _playbackTimeline.value = PlaybackTimelineState()
     }
 
@@ -381,6 +436,8 @@ class PlayerRuntimeController(
     /** Back buffer (ms) the user configured, captured at build to restore once DV7 status is known. */
     internal var configuredBackBufferMs: Int = 0
     internal var metaVideos: List<Video> = emptyList()
+    internal var cloudPlaybackContext: CloudLibraryPlaybackContext? =
+        cloudPlaybackSessionStore.load(cloudSessionToken)
     internal var metaGenres: List<String> = emptyList()
     internal var metaCountry: String? = null
     internal var metaFetchJob: Job? = null
@@ -434,6 +491,7 @@ class PlayerRuntimeController(
     internal var stillWatchingEnabledSetting: Boolean = false
     internal var stillWatchingEpisodeThresholdSetting: Int =
         PlayerSettings.DEFAULT_STILL_WATCHING_EPISODE_THRESHOLD
+    internal var mpvHi10pGnextSoftwareFallbackEnabledSetting: Boolean = false
     internal var mpvHardwareDecodeModeSetting: MpvHardwareDecodeMode = MpvHardwareDecodeMode.AUTO_SAFE
     internal var mpvPreferredAudioLanguages: List<String> = emptyList()
     internal var currentStreamBingeGroup: String? = navigationArgs.bingeGroup
@@ -443,6 +501,7 @@ class PlayerRuntimeController(
     internal var rememberAudioDelayPerDeviceEnabled: Boolean = false
     internal var currentAudioOutputRoute: AudioOutputRoute? = null
     internal var audioOutputRouteCallback: AudioDeviceCallback? = null
+    internal var audioRouteChangeJob: Job? = null
 
     internal var lastBufferLogTimeMs: Long = 0L
     internal var pendingSeekFlush: Boolean = false
@@ -466,6 +525,7 @@ class PlayerRuntimeController(
     internal var ffmpegAudioRenderer: FfmpegAudioRenderer? = null
     internal var mpvView: NuvioMpvSurfaceView? = null
     internal var mpvInitializationInProgress: Boolean = false
+    internal var mpvMediaLoadPrepared: Boolean = false
     internal var mpvTrackRefreshJob: Job? = null
     internal var mpvTrackRefreshInProgress: Boolean = false
     internal var pendingMpvHardRestartOnNextAttach: Boolean = false
@@ -476,7 +536,17 @@ class PlayerRuntimeController(
     internal val seekProgressSyncDebounceMs = 700L
     internal val audioDelayUs = AtomicLong(0L)
     internal val subtitleDelayUs = AtomicLong(0L)
-    internal var pendingPreviewSeekPosition: Long? = null
+    internal var pendingPreviewSeekPosition: Long?
+        get() = _uiState.value.pendingPreviewSeekPosition
+        set(value) {
+            _uiState.update { state ->
+                if (state.pendingPreviewSeekPosition == value) {
+                    state
+                } else {
+                    state.copy(pendingPreviewSeekPosition = value)
+                }
+            }
+        }
     internal var pendingResumeProgress: WatchProgress? = null
     internal var hasRetriedCurrentStreamAfter416: Boolean = false
     internal var isReleasingPlayer: Boolean = false
@@ -486,6 +556,7 @@ class PlayerRuntimeController(
     internal var hasTriedDv7HevcFallback: Boolean = false
     internal var forceDv7ToHevc: Boolean = false
     internal var startupRetryCount: Int = 0
+    internal var parsingErrorProbeAttempted: Boolean = false
     internal var hasRetriedCurrentStreamAfterUnexpectedNpe: Boolean = false
     internal var hasRetriedCurrentStreamAfterMediaPeriodHolderCrash: Boolean = false
     internal var timeoutRecoveryAttempts: Int = 0
@@ -581,12 +652,17 @@ class PlayerRuntimeController(
         // causing the resume seek to be silently lost when ExoPlayer's STATE_READY
         // fired before the DB read completed.
         observeSubtitleSettings()
-        fetchMetaDetails(contentId, contentType)
+        if (contentType.equals("cloud", ignoreCase = true)) {
+            initializeCloudPlaybackSequence()
+        } else {
+            fetchMetaDetails(contentId, contentType)
+        }
         observeBlurUnwatchedEpisodes()
         observeEpisodeWatchProgress()
         observeTorrentSettings()
         observeStreamBadgeSettings()
         observeDeviceLocalAspectMode()
+        observePlayerStatsHud()
     }
 
     private fun observeTorrentSettings() {

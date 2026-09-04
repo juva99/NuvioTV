@@ -640,7 +640,6 @@
     <string name="audio_decoder_prefer_app">Utamakan dekoder aplikasi (FFmpeg)</string>
     <string name="audio_decoder_priority">Prioritas Dekoder</string>
     <string name="audio_enable_downmix_title">Aktifkan downmix</string>
-    <string name="audio_enable_downmix_subtitle">Menggunakan jalur downmix FFmpeg. Jika dinonaktifkan, audio akan mengikuti jalur Android/perangkat sebelumnya.</string>
     <string name="audio_tunneled">Tunneled Playback</string>
     <string name="audio_tunneled_sub">Sinkronisasi audio/video tingkat hardware. Mungkin meningkatkan pemutaran di beberapa perangkat Android TV</string>
     <string name="audio_mpv_hwdec_title">Dekoding Hardware (Hanya MPV)</string>
@@ -1655,11 +1654,9 @@
 
     <!-- AuthQrSignInScreen -->
     <string name="auth_qr_title">Masuk dengan QR</string>
-    <string name="auth_qr_account_login">Login Akun</string>
     <string name="auth_qr_finishing">Menyelesaikan masuk\u2026</string>
     <string name="auth_qr_code_label">Kode: %1$s</string>
     <string name="auth_qr_expires">Kedaluwarsa dalam %1$s</string>
-    <string name="auth_qr_phone_hint">Gunakan ponsel Anda untuk masuk dengan email/kata sandi. TV tetap hanya QR untuk login lebih cepat.</string>
     <string name="auth_qr_scan_instruction">Pindai QR, setujui di browser, lalu kembali ke sini.</string>
     <string name="auth_qr_code_display">Kode: %1$s</string>
     <string name="auth_qr_refresh">Muat Ulang QR</string>

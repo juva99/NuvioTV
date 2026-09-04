@@ -32,9 +32,11 @@ internal data class PlayerNavigationArgs(
     val fileIdx: Int?,
     val sourcesJson: String?,
     val contentLanguage: String?,
+    val cloudSessionToken: String?,
     val rememberedAudioLanguage: String?,
     val rememberedAudioName: String?,
-    val launchStartedAtMs: Long?
+    val launchStartedAtMs: Long?,
+    val profileId: Int?
 ) {
     val torrentTrackers: List<String>
         get() {
@@ -90,9 +92,11 @@ internal data class PlayerNavigationArgs(
                 fileIdx = savedStateHandle.get<String>("fileIdx")?.toIntOrNull(),
                 sourcesJson = decodedOrNull("sources"),
                 contentLanguage = decodedOrNull("contentLanguage"),
+                cloudSessionToken = decodedOrNull("cloudSessionToken"),
                 rememberedAudioLanguage = decodedOrNull("rememberedAudioLanguage"),
                 rememberedAudioName = decodedOrNull("rememberedAudioName"),
-                launchStartedAtMs = savedStateHandle.get<String>("launchStartedAtMs")?.toLongOrNull()
+                launchStartedAtMs = savedStateHandle.get<String>("launchStartedAtMs")?.toLongOrNull(),
+                profileId = savedStateHandle.get<String>("profileId")?.toIntOrNull()
             )
         }
     }

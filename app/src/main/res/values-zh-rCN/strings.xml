@@ -677,7 +677,6 @@
     <string name="audio_decoder_prefer_app">偏好应用解码器 (FFmpeg)</string>
     <string name="audio_decoder_priority">解码器优先级</string>
     <string name="audio_enable_downmix_title">启用混音下转</string>
-    <string name="audio_enable_downmix_subtitle">使用 FFmpeg 混音下转路径。禁用时，音频将遵循先前的 Android/设备路径。</string>
     <string name="audio_tunneled">通道化播放</string>
     <string name="audio_tunneled_sub">硬件级别的音频/视频同步。可能在部分 Android TV 设备上改善播放。</string>
     <string name="audio_force_optical_passthrough">强制 AC-3 转码 (光纤/SPDIF)</string>
@@ -1801,11 +1800,9 @@
 
     <string name="auth_qr_title">使用 QR 码登录</string>
     <string name="auth_qr_tagline">随时随地观看您的媒体库</string>
-    <string name="auth_qr_account_login">账户登录</string>
     <string name="auth_qr_finishing">正在完成登录…</string>
     <string name="auth_qr_code_label">代码：%1$s</string>
     <string name="auth_qr_expires">将在 %1$s 后过期</string>
-    <string name="auth_qr_phone_hint">使用手机以电子邮件/密码登录。电视保持 QR 码方式以加快登录速度。</string>
     <string name="auth_qr_scan_instruction">扫描 QR 码，在浏览器中批准，然后返回此处。</string>
     <string name="auth_qr_code_display">代码：%1$s</string>
     <string name="auth_qr_refresh">刷新 QR</string>

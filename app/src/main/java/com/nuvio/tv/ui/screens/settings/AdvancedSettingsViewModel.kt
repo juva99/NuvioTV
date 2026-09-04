@@ -6,6 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.nuvio.tv.BuildConfig
 import com.nuvio.tv.core.qr.QrCodeGenerator
 import com.nuvio.tv.data.local.GitHubIssueReportingDataStore
+import com.nuvio.tv.core.runtime.AppRestarter
+import com.nuvio.tv.data.local.DeviceLocalPlayerPreferences
+import com.nuvio.tv.data.local.ImagePerformancePreferences
 import com.nuvio.tv.data.local.LayoutPreferenceDataStore
 import com.nuvio.tv.data.local.PlayerSettingsDataStore
 import com.nuvio.tv.data.local.SentrySettingsDataStore
@@ -54,6 +57,8 @@ data class AdvancedSettingsUiState(
     val githubIssueTokenConfigured: Boolean = false,
     val githubIssueAuthorizationAvailable: Boolean = BuildConfig.GITHUB_ISSUE_CLIENT_ID.isNotBlank(),
     val githubIssueAuthorization: GitHubIssueAuthorizationState = GitHubIssueAuthorizationState.Idle,
+    val playerStatsHudEnabled: Boolean = false,
+    val rgb565Enabled: Boolean = true,
     val sentryEnabled: Boolean = true
 )
 
@@ -70,6 +75,8 @@ sealed class AdvancedSettingsEvent {
     data object ClearGitHubIssueToken : AdvancedSettingsEvent()
     data object StartGitHubIssueAuthorization : AdvancedSettingsEvent()
     data object CancelGitHubIssueAuthorization : AdvancedSettingsEvent()
+    data class SetPlayerStatsHudEnabled(val enabled: Boolean) : AdvancedSettingsEvent()
+    data class SetRgb565Enabled(val enabled: Boolean) : AdvancedSettingsEvent()
     data class SetSentryEnabled(val enabled: Boolean) : AdvancedSettingsEvent()
 }
 
@@ -79,13 +86,17 @@ class AdvancedSettingsViewModel @Inject constructor(
     private val playerSettingsDataStore: PlayerSettingsDataStore,
     private val githubIssueReportingDataStore: GitHubIssueReportingDataStore,
     private val githubIssueAuthorizationRepository: GitHubIssueAuthorizationRepository,
-    private val sentrySettingsDataStore: SentrySettingsDataStore
+    private val deviceLocalPlayerPreferences: DeviceLocalPlayerPreferences,
+    private val sentrySettingsDataStore: SentrySettingsDataStore,
+    private val imagePerformancePreferences: ImagePerformancePreferences,
+    private val appRestarter: AppRestarter
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(AdvancedSettingsUiState())
     val uiState: StateFlow<AdvancedSettingsUiState> = _uiState.asStateFlow()
     private var githubIssueAuthorizationJob: Job? = null
 
     init {
+        _uiState.update { it.copy(rgb565Enabled = imagePerformancePreferences.rgb565Enabled) }
         viewModelScope.launch {
             layoutPreferenceDataStore.fastHorizontalNavigationEnabled.collectLatest { enabled ->
                 _uiState.update { it.copy(fastHorizontalNavigationEnabled = enabled) }
@@ -114,6 +125,11 @@ class AdvancedSettingsViewModel @Inject constructor(
                         githubIssueTokenConfigured = settings.tokenConfigured
                     )
                 }
+            }
+        }
+        viewModelScope.launch {
+            deviceLocalPlayerPreferences.playerStatsHudEnabled.collectLatest { enabled ->
+                _uiState.update { it.copy(playerStatsHudEnabled = enabled) }
             }
         }
         viewModelScope.launch {
@@ -168,6 +184,17 @@ class AdvancedSettingsViewModel @Inject constructor(
             }
             AdvancedSettingsEvent.CancelGitHubIssueAuthorization -> {
                 cancelGitHubIssueAuthorization()
+            }
+            is AdvancedSettingsEvent.SetPlayerStatsHudEnabled -> {
+                viewModelScope.launch {
+                    deviceLocalPlayerPreferences.setPlayerStatsHudEnabled(event.enabled)
+                }
+            }
+            is AdvancedSettingsEvent.SetRgb565Enabled -> {
+                if (imagePerformancePreferences.setRgb565Enabled(event.enabled)) {
+                    _uiState.update { it.copy(rgb565Enabled = event.enabled) }
+                    appRestarter.restart()
+                }
             }
             is AdvancedSettingsEvent.SetSentryEnabled -> {
                 viewModelScope.launch {

@@ -2,6 +2,8 @@ package com.nuvio.tv.ui.screens.player
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.datasource.DataSource
@@ -25,6 +27,9 @@ import com.nuvio.tv.data.local.VodCacheSizeMode
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.net.SocketTimeoutException
 import java.net.URLDecoder
 import java.security.SecureRandom
@@ -108,20 +113,38 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
 
         val mediaItem = mediaItemBuilder.build()
 
-        // 1. Parallel connections (opt-in). ParallelRangeDataSource needs a concrete
-        // OkHttpDataSource.Factory, so build one only on this path.
-        parallelStartupPrefetchUnlocked.set(!(useParallelConnections && !isHls && !isDash))
-        val progressiveUpstreamFactory: DataSource.Factory = if (useParallelConnections && !isHls && !isDash) {
+        val mp4SessionMode = !useParallelConnections && !isHls && !isDash &&
+            resolvedMimeType == MimeTypes.VIDEO_MP4
+        val useChunkSessionSource = (useParallelConnections || mp4SessionMode) && !isHls && !isDash
+        parallelStartupPrefetchUnlocked.set(!useChunkSessionSource)
+        val progressiveUpstreamFactory: DataSource.Factory = if (useChunkSessionSource) {
+            if (mp4SessionMode) {
+                Log.i(
+                    "PlayerMediaSourceFactory",
+                    "MP4_SESSION engaged: single-connection chunk session " +
+                        "(${MP4_SESSION_CHUNK_BYTES / (1024L * 1024L)} MB chunks) " +
+                        "for progressive MP4 with parallel connections off"
+                )
+            }
             val okHttpFactory = OkHttpDataSource.Factory(playbackHttpClient).apply {
                 setDefaultRequestProperties(sanitizedHeaders)
                 setUserAgent(DEFAULT_USER_AGENT)
             }
             ParallelRangeDataSource.Factory(
                 okHttpFactory,
-                parallelConnectionCount,
-                parallelChunkSizeKb.toLong() * 1024L,
+                if (mp4SessionMode) 1 else parallelConnectionCount,
+                if (mp4SessionMode) {
+                    MP4_SESSION_CHUNK_BYTES
+                } else {
+                    // Runtime enforcement of the tier chunk cap: a value
+                    // persisted before the cap existed (or on another device)
+                    // must not bypass it.
+                    parallelChunkSizeKb
+                        .coerceAtMost(com.nuvio.tv.ui.screens.settings.MemoryBudget.tierMaxChunkMb * 1024)
+                        .toLong() * 1024L
+                },
                 useNativeMemory = nuvioPerformanceModeEnabled,
-                shouldAllowBackgroundPrefetch = { true },
+                shouldAllowBackgroundPrefetch = { parallelStartupPrefetchUnlocked.get() },
                 onResolvedUri = { resolved -> currentVodCacheResolvedUrl = resolved?.toString() }
             )
         } else {
@@ -155,7 +178,8 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
             progressiveUpstreamFactory
         }
 
-        val extractorsFactory = customExtractorsFactory ?: DefaultExtractorsFactory()
+        val baseExtractorsFactory = customExtractorsFactory ?: DefaultExtractorsFactory()
+        val extractorsFactory = baseExtractorsFactory.withNuvioMp4Extractor()
         val defaultFactory = DefaultMediaSourceFactory(progressiveFactory, extractorsFactory).apply {
             setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
             customSubtitleParserFactory?.let { parserFactory ->
@@ -185,7 +209,9 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
         return wrapAudioDelay(mediaSource = mediaSource, audioDelayUsProvider = audioDelayUsProvider)
     }
 
-    fun shutdown() = Unit
+    fun shutdown() {
+        ParallelRangeDataSource.releaseRetainedSession()
+    }
 
     private fun buildVodCacheDataSourceFactory(upstreamFactory: DataSource.Factory, cache: SimpleCache): DataSource.Factory {
         val dataSinkFactory = CacheDataSink.Factory().setCache(cache).setFragmentSize(2L * 1024L * 1024L)
@@ -232,10 +258,11 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
 
     companion object {
         private const val MIME_VIDEO_QUICK_TIME = "video/quicktime"
+        private const val MP4_SESSION_CHUNK_BYTES = 8L * 1024L * 1024L
         private const val ENABLE_VOD_CACHE = true
         private const val VOD_CACHE_FREE_SPACE_RESERVE_BYTES = 1024L * 1024L * 1024L
         internal const val DEFAULT_USER_AGENT =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "Mozilla/5.0 (Linux; Android 13; Android TV) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
         private const val MIME_PROBE_CACHE_SIZE = 64
@@ -457,6 +484,60 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
             )
         }
 
+        suspend fun probeNetworkMimeType(
+            url: String,
+            headers: Map<String, String> = emptyMap()
+        ): String? = withContext(Dispatchers.IO) {
+            if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) {
+                return@withContext null
+            }
+            val sanitizedHeaders = sanitizeHeaders(headers)
+            val methods = listOf("HEAD", "GET")
+            for (method in methods) {
+                runCatching {
+                    val requestBuilder = Request.Builder().url(url)
+                    if (method == "GET") {
+                        requestBuilder.header("Range", "bytes=0-2048")
+                    }
+                    sanitizedHeaders.forEach { (key, value) ->
+                        if (!key.equals("Range", ignoreCase = true)) {
+                            requestBuilder.header(key, value)
+                        }
+                    }
+                    if (sanitizedHeaders.none { it.key.equals("User-Agent", ignoreCase = true) }) {
+                        requestBuilder.header("User-Agent", DEFAULT_USER_AGENT)
+                    }
+
+                    PlayerPlaybackNetworking.playbackHttpClient.newCall(requestBuilder.build()).execute().use { response ->
+                        if (!response.isSuccessful && response.code !in 200..308) {
+                            return@use null
+                        }
+
+                        val finalUrl = response.request.url.toString()
+                        inferAdaptiveMimeTypeFromPath(finalUrl)?.let { return@withContext it }
+
+                        val contentType = response.header("Content-Type")
+                        normalizeMimeType(contentType)?.let { return@withContext it }
+
+                        val responseHeadersMap = response.headers.names().associateWith { response.header(it).orEmpty() }
+                        inferMimeTypeFromResponseHeaders(responseHeadersMap)?.let { return@withContext it }
+
+                        if (method == "GET") {
+                            val snippet = response.body?.byteStream()?.use { stream ->
+                                val bytes = ByteArray(512)
+                                val read = stream.read(bytes)
+                                if (read > 0) String(bytes, 0, read, Charsets.UTF_8) else null
+                            }
+                            sniffManifestMimeType(snippet)?.let { return@withContext it }
+                        }
+
+                        inferMimeTypeFromPath(finalUrl)?.let { return@withContext it }
+                    }
+                }.getOrNull()?.let { return@withContext it }
+            }
+            null
+        }
+
         private fun inferMimeTypeFromResponseHeaders(headers: Map<String, String>?): String? {
             if (headers.isNullOrEmpty()) return null
 
@@ -665,6 +746,32 @@ private inline fun <reified T : Throwable> Throwable.findCause(): T? {
 }
 
 private class PlayerLoadErrorHandlingPolicy : DefaultLoadErrorHandlingPolicy(6) {
+    override fun getFallbackSelectionFor(
+        fallbackOptions: LoadErrorHandlingPolicy.FallbackOptions,
+        loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo
+    ): LoadErrorHandlingPolicy.FallbackSelection? {
+        val responseCode = loadErrorInfo.exception
+            .findCause<androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()
+            ?.responseCode
+        if (
+            shouldPreferAlternativeHlsTrack(
+                responseCode = responseCode,
+                dataType = loadErrorInfo.mediaLoadData.dataType,
+                alternativeTrackAvailable = fallbackOptions.isFallbackAvailable(
+                    LoadErrorHandlingPolicy.FALLBACK_TYPE_TRACK
+                )
+            )
+        ) {
+            // A media-segment 404 belongs to the selected rendition. Exclude that
+            // rendition first so HLS can continue with another compatible track.
+            return LoadErrorHandlingPolicy.FallbackSelection(
+                LoadErrorHandlingPolicy.FALLBACK_TYPE_TRACK,
+                DefaultLoadErrorHandlingPolicy.DEFAULT_TRACK_EXCLUSION_MS
+            )
+        }
+        return super.getFallbackSelectionFor(fallbackOptions, loadErrorInfo)
+    }
+
     override fun getRetryDelayMsFor(loadErrorInfo: LoadErrorHandlingPolicy.LoadErrorInfo): Long {
         val httpException = loadErrorInfo.exception.findCause<androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException>()
         if (httpException != null) {
@@ -683,3 +790,12 @@ private class PlayerLoadErrorHandlingPolicy : DefaultLoadErrorHandlingPolicy(6) 
         } else super.getRetryDelayMsFor(loadErrorInfo)
     }
 }
+
+internal fun shouldPreferAlternativeHlsTrack(
+    responseCode: Int?,
+    dataType: Int,
+    alternativeTrackAvailable: Boolean
+): Boolean =
+    responseCode == 404 &&
+        dataType == C.DATA_TYPE_MEDIA &&
+        alternativeTrackAvailable

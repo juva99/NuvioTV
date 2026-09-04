@@ -19,7 +19,7 @@ interface GitHubReleaseApi {
     suspend fun getReleases(
         @Path("owner") owner: String,
         @Path("repo") repo: String,
-        @Query("per_page") perPage: Int = 30
+        @Query("per_page") perPage: Int = 100
     ): Response<List<GitHubReleaseDto>>
 
     @GET("repos/{owner}/{repo}/contributors")

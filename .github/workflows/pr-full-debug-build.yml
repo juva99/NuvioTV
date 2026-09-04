@@ -78,6 +78,7 @@ jobs:
       - name: Test subtitle synchronization
         run: |
           ./gradlew :app:testFullDebugUnitTest \
+            --tests 'com.nuvio.tv.updater.*' \
             --tests "com.nuvio.tv.ui.screens.player.SrtDocumentTest" \
             --tests "com.nuvio.tv.ui.screens.player.SubtitleReferenceCaptureTest" \
             --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerTest" \

@@ -219,6 +219,12 @@ fun PlaybackSettingsContent(
                 onShowStreamRegexDialog = { openDialog { showStreamRegexDialog = true } },
                 onShowNextEpisodeThresholdModeDialog = { openDialog { showNextEpisodeThresholdModeDialog = true } },
                 onShowReuseLastLinkCacheDialog = { openDialog { showReuseLastLinkCacheDialog = true } },
+                onSetPostPlayRecommendationsEnabled = { enabled ->
+                    coroutineScope.launch { viewModel.setPostPlayRecommendationsEnabled(enabled) }
+                },
+                onSetPostPlayMovieThresholdPercent = { percent ->
+                    coroutineScope.launch { viewModel.setPostPlayMovieThresholdPercent(percent) }
+                },
                 onSetStreamAutoPlayNextEpisodeEnabled = { enabled ->
                     coroutineScope.launch { viewModel.setStreamAutoPlayNextEpisodeEnabled(enabled) }
                 },
@@ -310,6 +316,11 @@ fun PlaybackSettingsContent(
                 onSetStripHdr10PlusSei = { enabled ->
                     coroutineScope.launch { viewModel.setStripHdr10PlusSei(enabled) }
                 },
+                onSetMpvHi10pGnextSoftwareFallbackEnabled = { enabled ->
+                    coroutineScope.launch {
+                        viewModel.setMpvHi10pGnextSoftwareFallbackEnabled(enabled)
+                    }
+                },
                 onSetBufferEngineEnabled = { enabled ->
                     coroutineScope.launch { viewModel.setBufferEngineEnabled(enabled) }
                     if (enabled) memoryUsageTrigger++
@@ -323,6 +334,9 @@ fun PlaybackSettingsContent(
                 onSetUseForcedSubtitles = { enabled -> coroutineScope.launch { viewModel.setUseForcedSubtitles(enabled) } },
                 onSetSubtitleShowOnlyPreferredLanguages = { enabled ->
                     coroutineScope.launch { viewModel.setSubtitleShowOnlyPreferredLanguages(enabled) }
+                },
+                onSetSubtitleStripSdh = { enabled ->
+                    coroutineScope.launch { viewModel.setSubtitleStripSdh(enabled) }
                 },
                 onSetSubtitleOutlineEnabled = { enabled -> coroutineScope.launch { viewModel.setSubtitleOutlineEnabled(enabled) } },
                 onSetUseLibass = { enabled -> coroutineScope.launch { viewModel.setUseLibass(enabled) } },
@@ -618,7 +632,7 @@ internal fun ToggleSettingsItem(
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, if (enabled) NuvioTheme.colors.FocusRing else NuvioTheme.colors.FocusRing.copy(alpha = 0.3f)),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs, alpha = if (enabled) 1f else 0.3f),
                 shape = RoundedCornerShape(SettingsPillRadius)
             )
         ),
@@ -723,7 +737,7 @@ internal fun RenderTypeSettingsItem(
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing.copy(alpha = contentAlpha)),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs, alpha = contentAlpha),
                 shape = RoundedCornerShape(SettingsSecondaryCardRadius)
             ),
             border = if (isSelected) Border(
@@ -798,7 +812,7 @@ internal fun NavigationSettingsItem(
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, if (enabled) NuvioTheme.colors.FocusRing else NuvioTheme.colors.FocusRing.copy(alpha = 0.3f)),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs, alpha = if (enabled) 1f else 0.3f),
                 shape = RoundedCornerShape(SettingsPillRadius)
             )
         ),
@@ -976,7 +990,7 @@ private fun SliderSettingsItemLayout(
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, if (enabled) NuvioTheme.colors.FocusRing else NuvioTheme.colors.FocusRing.copy(alpha = 0.3f)),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs, alpha = if (enabled) 1f else 0.3f),
                 shape = RoundedCornerShape(SettingsSecondaryCardRadius)
             )
         ),
@@ -1056,7 +1070,7 @@ private fun SliderSettingsItemLayout(
                     ),
                     border = CardDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = CircleShape
                         )
                     ),
@@ -1109,7 +1123,7 @@ private fun SliderSettingsItemLayout(
                     ),
                     border = CardDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = CircleShape
                         )
                     ),
@@ -1163,7 +1177,7 @@ internal fun ColorSettingsItem(
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(NuvioTheme.spacing.xxs, if (enabled) NuvioTheme.colors.FocusRing else NuvioTheme.colors.FocusRing.copy(alpha = 0.3f)),
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs, alpha = if (enabled) 1f else 0.3f),
                 shape = RoundedCornerShape(SettingsPillRadius)
             )
         ),
@@ -1242,12 +1256,17 @@ internal fun LanguageSelectionDialog(
         val baseList = if (title == tmdbTitle) AVAILABLE_TMDB_LANGUAGES else AVAILABLE_SUBTITLE_LANGUAGES
         baseList.sortedBy { it.displayName.lowercase() }
     }
+    val originalHint = stringResource(R.string.audio_lang_original_hint)
     val languageOptions: List<SettingsPickerOption<String?>> = buildList {
         if (showNoneOption) {
             add(SettingsPickerOption(null, stringResource(R.string.action_none)))
         }
         extraOptions.forEach { (code, name) ->
-            add(SettingsPickerOption(code, name, trailing = code.uppercase()))
+            add(SettingsPickerOption(
+                code, name,
+                description = if (code == AudioLanguageOption.ORIGINAL) originalHint else null,
+                trailing = if (code == AudioLanguageOption.ORIGINAL) null else code.uppercase()
+            ))
         }
         sortedLanguages.forEach { language ->
             add(SettingsPickerOption(language.code, language.displayName, trailing = language.code.uppercase()))
@@ -1297,11 +1316,14 @@ internal fun ColorSelectionDialog(
                 .heightIn(max = 360.dp)
         ) {
             // Color grid using LazyRow for proper TV focus
+            val firstColorFocusRequester = remember { FocusRequester() }
             LazyRow(
                 state = colorListState,
                 horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md),
                 contentPadding = PaddingValues(horizontal = NuvioTheme.spacing.sm),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .settingsOptionRow(firstColorFocusRequester)
             ) {
                 items(
                     count = colors.size,
@@ -1322,7 +1344,13 @@ internal fun ColorSelectionDialog(
                             Modifier.focusRequester(focusRequester)
                         } else {
                             Modifier
-                        }
+                        }.then(
+                            if (index == 0) {
+                                Modifier.focusRequester(firstColorFocusRequester)
+                            } else {
+                                Modifier
+                            }
+                        )
                     )
                 }
             }
@@ -1349,7 +1377,7 @@ internal fun ColorSelectionDialog(
                     ),
                     border = CardDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = RoundedCornerShape(NuvioTheme.radii.sm)
                         )
                     ),
@@ -1391,7 +1419,7 @@ internal fun ColorSelectionDialog(
                     ),
                     border = CardDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = RoundedCornerShape(NuvioTheme.radii.sm)
                         )
                     ),
@@ -1421,7 +1449,7 @@ internal fun ColorSelectionDialog(
                     ),
                     border = CardDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = RoundedCornerShape(NuvioTheme.radii.sm)
                         )
                     ),
@@ -1446,7 +1474,7 @@ internal fun ColorSelectionDialog(
                     ),
                     border = CardDefaults.border(
                         focusedBorder = Border(
-                            border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                            border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                             shape = RoundedCornerShape(NuvioTheme.radii.sm)
                         )
                     ),
@@ -1493,7 +1521,7 @@ private fun ColorOption(
         ),
         border = CardDefaults.border(
             focusedBorder = Border(
-                border = BorderStroke(3.dp, NuvioTheme.colors.FocusRing),
+                border = NuvioTheme.focusRing.border(3.dp),
                 shape = CircleShape
             ),
             border = if (isSelected) Border(

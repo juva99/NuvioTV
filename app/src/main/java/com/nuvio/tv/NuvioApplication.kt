@@ -19,19 +19,21 @@ import coil3.bitmapFactoryMaxParallelism
 
 import okio.Path.Companion.toOkioPath
 import com.nuvio.tv.core.diagnostics.SentryInitializer
+import com.nuvio.tv.core.image.StaleWhileRevalidateCacheStrategy
 import com.nuvio.tv.core.runtime.PluginRuntimeHooks
 import com.nuvio.tv.core.sync.StartupSyncService
 import com.nuvio.tv.core.sync.androidtv.AndroidTvChannelSyncService
 import com.nuvio.tv.core.network.IPv4FirstDns
+import com.nuvio.tv.data.local.ImagePerformancePreferences
 import com.nuvio.tv.data.local.SentrySettingsDataStore
 import com.nuvio.tv.data.simkl.SimklAnimeIdPreferenceHolder
-import coil3.network.cachecontrol.CacheControlCacheStrategy
 import dagger.hilt.android.HiltAndroidApp
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 @HiltAndroidApp
@@ -40,6 +42,7 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
     @Inject lateinit var startupSyncService: StartupSyncService
     @Inject lateinit var androidTvChannelSyncService: AndroidTvChannelSyncService
     @Inject lateinit var sentrySettingsDataStore: SentrySettingsDataStore
+    @Inject lateinit var imagePerformancePreferences: ImagePerformancePreferences
     @Inject lateinit var simklAnimeIdPreferenceHolder: SimklAnimeIdPreferenceHolder
 
     companion object {
@@ -85,6 +88,33 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
     }
 
     override fun newImageLoader(context: android.content.Context): ImageLoader {
+        val imageOkHttpClient by lazy {
+            val imageDispatcher = okhttp3.Dispatcher().apply {
+                maxRequests = 32
+                maxRequestsPerHost = 16
+            }
+            OkHttpClient.Builder()
+                .dispatcher(imageDispatcher)
+                .dns(IPv4FirstDns())
+                .connectTimeout(4, TimeUnit.SECONDS)
+                .readTimeout(5, TimeUnit.SECONDS)
+                .callTimeout(12, TimeUnit.SECONDS)
+                .addInterceptor { chain ->
+                    try {
+                        chain.proceed(chain.request())
+                    } catch (e: java.net.SocketTimeoutException) {
+                        chain.withConnectTimeout(3, TimeUnit.SECONDS)
+                            .withReadTimeout(4, TimeUnit.SECONDS)
+                            .proceed(chain.request())
+                    }
+                }
+                .followRedirects(true)
+                .followSslRedirects(true)
+                .build()
+        }
+
+        val imageLoaderRef: () -> ImageLoader = { SingletonImageLoader.get(this) }
+
         return ImageLoader.Builder(this)
             .components {
                 if (Build.VERSION.SDK_INT >= 28) {
@@ -93,18 +123,15 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
                     add(GifDecoder.Factory())
                 }
                 add(SvgDecoder.Factory())
-                // CacheControlCacheStrategy respects server Cache-Control headers,
-                // so dynamic images (e.g. BetterPosters with max-age) revalidate.
                 add(
                     coil3.network.okhttp.OkHttpNetworkFetcherFactory(
-                        callFactory = {
-                            OkHttpClient.Builder()
-                                .dns(IPv4FirstDns())
-                                .followRedirects(true)
-                                .followSslRedirects(true)
-                                .build()
+                        callFactory = { imageOkHttpClient },
+                        cacheStrategy = {
+                            StaleWhileRevalidateCacheStrategy(
+                                revalidationClient = { imageOkHttpClient },
+                                imageLoaderProvider = imageLoaderRef,
+                            )
                         },
-                        cacheStrategy = { CacheControlCacheStrategy() },
                     )
                 )
             }
@@ -113,14 +140,15 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
                 val memoryInfo = ActivityManager.MemoryInfo()
                 activityManager.getMemoryInfo(memoryInfo)
                 val totalRamMb = memoryInfo.totalMem / (1024 * 1024)
-                // Low-RAM devices (≤2GB): use 0.10 — larger cache reduces GC pressure
+                // Low-RAM devices (≤2GB): use 0.15 — larger cache reduces GC pressure
                 // from rapid bitmap eviction during scrolling.
-                // Mid-range devices (≤3GB): use 0.15 for decent image caching.
-                // Normal devices (>3GB): use 0.20 for snappy image loading.
+                // Mid-range devices (≤3GB): use 0.20 for decent image caching.
+                // Normal devices (>3GB): use 0.25 for snappy image loading.
+                // - allowHardware(false) keeps bitmaps on heap instead of GPU memory
                 val cachePercent = when {
-                    totalRamMb <= 2048 -> 0.10
-                    totalRamMb <= 3072 -> 0.25
-                    else -> 0.20
+                    totalRamMb <= 2048 -> 0.15
+                    totalRamMb <= 3072 -> 0.20
+                    else -> 0.25
                 }
                 MemoryCache.Builder()
                     .maxSizePercent(context, cachePercent)
@@ -134,8 +162,8 @@ class NuvioApplication : Application(), SingletonImageLoader.Factory {
             }
             .crossfade(false)
             .precision(coil3.size.Precision.INEXACT)
-            .allowHardware(true)
-            .allowRgb565(true)
+            .allowHardware(false)
+            .allowRgb565(imagePerformancePreferences.rgb565Enabled)
             .bitmapFactoryMaxParallelism(4)
             .build()
     }

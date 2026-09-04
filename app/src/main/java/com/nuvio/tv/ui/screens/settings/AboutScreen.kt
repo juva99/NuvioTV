@@ -6,9 +6,7 @@ import com.nuvio.tv.ui.theme.NuvioTheme
 
 import android.content.Intent
 import android.net.Uri
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,27 +21,22 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.nuvio.tv.BuildConfig
 import com.nuvio.tv.R
 import com.nuvio.tv.core.build.AppFeaturePolicy
-import com.nuvio.tv.updater.UpdateViewModel
+import com.nuvio.tv.ui.components.MemberBrandWordmark
 
 @Composable
 fun AboutScreen(
@@ -98,13 +91,9 @@ fun AboutSettingsContent(
             ) {
                 Spacer(modifier = Modifier.height(NuvioTheme.spacing.xs))
 
-                Image(
-                    painter = painterResource(id = R.drawable.app_logo_wordmark),
-                    contentDescription = stringResource(R.string.cd_nuvio_logo),
-                    modifier = Modifier
-                        .width(180.dp)
-                        .height(40.dp),
-                    contentScale = ContentScale.Fit
+                MemberBrandWordmark(
+                    height = 40.dp,
+                    contentDescription = stringResource(R.string.cd_nuvio_logo)
                 )
 
                 Text(
@@ -124,31 +113,7 @@ fun AboutSettingsContent(
                 Spacer(modifier = Modifier.height(NuvioTheme.spacing.xxs))
 
                 if (AppFeaturePolicy.inAppUpdatesEnabled) {
-                    val updateViewModel: UpdateViewModel = hiltViewModel(context as ComponentActivity)
-                    val updateState by updateViewModel.uiState.collectAsStateWithLifecycle()
-
-                    SettingsToggleRow(
-                        title = stringResource(R.string.about_update_banner_title),
-                        subtitle = stringResource(R.string.about_update_banner_subtitle),
-                        checked = updateState.updateBannerEnabled,
-                        onToggle = {
-                            updateViewModel.setUpdateBannerEnabled(!updateState.updateBannerEnabled)
-                        },
-                        modifier = if (initialFocusRequester != null) {
-                            Modifier.focusRequester(initialFocusRequester)
-                        } else {
-                            Modifier
-                        }
-                    )
-
-                    SettingsActionRow(
-                        title = stringResource(R.string.about_check_updates),
-                        subtitle = stringResource(R.string.about_check_updates_subtitle),
-                        trailingIcon = Icons.Default.OpenInNew,
-                        onClick = {
-                            updateViewModel.checkForUpdates(force = true, showNoUpdateFeedback = true)
-                        }
-                    )
+                    UpdateChannelSettings(initialFocusRequester)
                 }
 
                 SettingsActionRow(
@@ -169,12 +134,14 @@ fun AboutSettingsContent(
                     }
                 )
 
-                SettingsActionRow(
-                    title = stringResource(R.string.about_supporters_contributors),
-                    subtitle = stringResource(R.string.about_supporters_contributors_subtitle),
-                    trailingIcon = Icons.Default.ChevronRight,
-                    onClick = onNavigateToSupportersContributors
-                )
+                if (AppFeaturePolicy.supportNuvioEnabled) {
+                    SettingsActionRow(
+                        title = stringResource(R.string.support_nuvio_name),
+                        subtitle = stringResource(R.string.about_supporters_contributors_subtitle),
+                        trailingIcon = Icons.Default.ChevronRight,
+                        onClick = onNavigateToSupportersContributors
+                    )
+                }
 
                 SettingsActionRow(
                     title = stringResource(R.string.about_licenses_attributions),

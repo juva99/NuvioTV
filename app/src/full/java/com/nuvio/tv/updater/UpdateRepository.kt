@@ -7,35 +7,61 @@ import com.nuvio.tv.updater.model.AppUpdate
 import javax.inject.Inject
 import javax.inject.Singleton
 
+internal class NoEligibleUpdateException(channel: UpdateChannel) :
+    IllegalStateException("No compatible APK release found for ${channel.storedValue} channel")
+
 @Singleton
 class UpdateRepository @Inject constructor(
     private val gitHubReleaseApi: GitHubReleaseApi
 ) {
 
-    suspend fun getLatestUpdate(): Result<AppUpdate> {
+    suspend fun getLatestUpdate(channel: UpdateChannel): Result<AppUpdate> {
         return runCatching {
             val owner = BuildConfig.GITHUB_OWNER
             val repo = BuildConfig.GITHUB_REPO
 
-            val prereleasePrefix = BuildConfig.UPDATE_PRERELEASE_PREFIX
-            val dto = if (prereleasePrefix.isBlank()) {
-                val response = gitHubReleaseApi.getLatestRelease(owner = owner, repo = repo)
-                if (!response.isSuccessful) error("GitHub API error: ${response.code()}")
-                response.body()?.takeUnless { it.draft || it.prerelease }
-                    ?: error("Empty or invalid GitHub release response")
-            } else {
-                val response = gitHubReleaseApi.getReleases(owner = owner, repo = repo)
-                if (!response.isSuccessful) error("GitHub API error: ${response.code()}")
-                selectLatestPrerelease(response.body().orEmpty(), prereleasePrefix)
-                    ?: error("No matching prerelease found")
+            val releases = when (channel) {
+                UpdateChannel.STABLE -> {
+                    val response = gitHubReleaseApi.getLatestRelease(owner = owner, repo = repo)
+                    if (!response.isSuccessful) {
+                        error("GitHub API error: ${response.code()}")
+                    }
+                    listOf(response.body() ?: error("Empty GitHub release response"))
+                }
+                UpdateChannel.BETA -> {
+                    val response = gitHubReleaseApi.getReleases(owner = owner, repo = repo)
+                    if (!response.isSuccessful) {
+                        error("GitHub API error: ${response.code()}")
+                    }
+                    response.body() ?: error("Empty GitHub release response")
+                }
             }
+            val releasesForSelection = if (
+                channel == UpdateChannel.BETA &&
+                BuildConfig.UPDATE_PRERELEASE_PREFIX.isNotBlank()
+            ) {
+                listOfNotNull(
+                    selectLatestPrerelease(
+                        releases,
+                        BuildConfig.UPDATE_PRERELEASE_PREFIX
+                    )
+                )
+            } else {
+                releases
+            }
+            val releaseWithAsset = ReleaseSelector
+                .eligibleReleases(releasesForSelection, channel)
+                .firstNotNullOfOrNull { release ->
+                    AbiSelector.chooseBestApkAsset(release.assets)?.let { asset ->
+                        release to asset
+                    }
+                }
+                ?: throw NoEligibleUpdateException(channel)
+            val (dto, asset) = releaseWithAsset
 
             val tag = dto.tagName?.takeIf { it.isNotBlank() }
                 ?: dto.name?.takeIf { it.isNotBlank() }
                 ?: error("Release has no tag/name")
-
-            val asset = AbiSelector.chooseBestApkAsset(dto.assets)
-                ?: error("No APK asset found in release")
 
             AppUpdate(
                 tag = tag,

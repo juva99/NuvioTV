@@ -12,6 +12,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.focusGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -51,6 +52,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
@@ -68,7 +70,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.tv.material3.Border
 import androidx.tv.material3.Button
@@ -85,6 +86,7 @@ import coil3.request.crossfade
 import com.nuvio.tv.R
 import com.nuvio.tv.domain.model.SettingsUiStyle
 import com.nuvio.tv.ui.components.FocusMarqueeText
+import com.nuvio.tv.ui.components.BrandWordmark
 import com.nuvio.tv.ui.components.NuvioDialog
 import com.nuvio.tv.ui.screens.detail.requestFocusAfterFrames
 import com.nuvio.tv.ui.theme.NuvioComponents
@@ -98,6 +100,19 @@ internal val SettingsRailItemHeight = NuvioComponents.tokens.settings.railItemHe
 internal val SettingsZenRowShape = RoundedCornerShape(12.dp)
 internal val SettingsHorizonRowShape = RoundedCornerShape(10.dp)
 internal val SettingsHorizonGroupShape = RoundedCornerShape(16.dp)
+
+/**
+ * Marks a row that holds several options side by side. Without it, moving into the row uses a
+ * geometric search and lands on whichever option sits nearest the full width row above, which is
+ * the middle one. With it, coming back to the row takes the option last used, and anything else
+ * takes [fallbackOption], which callers point at the first option.
+ *
+ * The fallback has to be named. Left at the default it hands the choice back to the same geometric
+ * search, which puts focus in the middle again.
+ */
+internal fun Modifier.settingsOptionRow(fallbackOption: FocusRequester): Modifier = this
+    .focusRestorer(fallbackOption)
+    .focusGroup()
 
 @Composable
 @androidx.compose.runtime.ReadOnlyComposable
@@ -200,8 +215,7 @@ internal fun SettingsBrandPanel(
 
         Spacer(modifier = Modifier.height(26.dp))
 
-        Image(
-            painter = painterResource(id = R.drawable.app_logo_wordmark),
+        BrandWordmark(
             contentDescription = stringResource(R.string.cd_nuvio_logo),
             modifier = Modifier
                 .fillMaxWidth(0.9f)
@@ -327,11 +341,11 @@ internal fun SettingsRailButton(
         } else {
             CardDefaults.border(
                 border = if (isSelected) Border(
-                    border = BorderStroke(NuvioTheme.spacing.hairline, NuvioTheme.colors.FocusRing),
+                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.hairline),
                     shape = RoundedCornerShape(SettingsPillRadius)
                 ) else Border.None,
                 focusedBorder = Border(
-                    border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing),
+                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
                     shape = RoundedCornerShape(SettingsPillRadius)
                 )
             )
@@ -718,7 +732,7 @@ internal fun SettingsToggleRow(
         } else {
             CardDefaults.border(
                 focusedBorder = Border(
-                    border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing.copy(alpha = contentAlpha)),
+                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs, alpha = contentAlpha),
                     shape = RoundedCornerShape(SettingsPillRadius)
                 )
             )
@@ -807,7 +821,7 @@ internal fun SettingsActionRow(
         } else {
             CardDefaults.border(
                 focusedBorder = Border(
-                    border = BorderStroke(NuvioTheme.spacing.xxs, NuvioTheme.colors.FocusRing.copy(alpha = contentAlpha)),
+                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs, alpha = contentAlpha),
                     shape = RoundedCornerShape(SettingsPillRadius)
                 )
             )
@@ -1197,11 +1211,11 @@ internal fun SettingsChoiceChip(
         } else {
             CardDefaults.border(
                 border = if (selected) Border(
-                    border = BorderStroke(NuvioTheme.spacing.hairline, NuvioTheme.colors.FocusRing),
+                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.hairline),
                     shape = RoundedCornerShape(SettingsPillRadius)
                 ) else Border.None,
                 focusedBorder = Border(
-                    border = BorderStroke(NuvioTheme.spacing.hairline, NuvioTheme.colors.FocusRing),
+                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.hairline),
                     shape = RoundedCornerShape(SettingsPillRadius)
                 )
             )

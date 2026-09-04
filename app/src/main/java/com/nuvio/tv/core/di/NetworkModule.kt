@@ -6,12 +6,11 @@ import com.nuvio.tv.BuildConfig
 import com.nuvio.tv.data.remote.api.AddonApi
 import com.nuvio.tv.data.remote.api.AniSkipApi
 import com.nuvio.tv.data.remote.api.AnimeSkipApi
-import com.nuvio.tv.data.remote.api.ArmApi
 import com.nuvio.tv.data.remote.api.AuthDiagnosticReportApi
-import com.nuvio.tv.data.remote.api.DonationsApi
 import com.nuvio.tv.data.remote.api.GitHubReleaseApi
 import com.nuvio.tv.data.remote.api.GitHubIssueApi
 import com.nuvio.tv.data.remote.api.GitHubOAuthApi
+import com.nuvio.tv.data.remote.api.SupportersApi
 import com.nuvio.tv.data.remote.api.TraktApi
 import com.nuvio.tv.data.remote.api.TrailerApi
 import com.nuvio.tv.data.remote.api.IntroDbApi
@@ -130,7 +129,7 @@ object NetworkModule {
             // Prevent OkHttp from caching error responses (4xx/5xx).
             .addNetworkInterceptor { chain ->
                 val response = chain.proceed(chain.request())
-                if (!response.isSuccessful) {
+                if (response.code in 400..599) {
                     response.newBuilder()
                         .header("Cache-Control", "no-store")
                         .build()
@@ -428,21 +427,6 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    @Named("arm")
-    fun provideArmRetrofit(okHttpClient: OkHttpClient, moshi: Moshi): Retrofit =
-        Retrofit.Builder()
-            .baseUrl("https://arm.haglund.dev/api/v2/")
-            .client(okHttpClient)
-            .addConverterFactory(MoshiConverterFactory.create(moshi))
-            .build()
-
-    @Provides
-    @Singleton
-    fun provideArmApi(@Named("arm") retrofit: Retrofit): ArmApi =
-        retrofit.create(ArmApi::class.java)
-
-    @Provides
-    @Singleton
     @Named("animeSkipGql")
     fun provideAnimeSkipGqlRetrofit(okHttpClient: OkHttpClient, moshi: Moshi): Retrofit =
         Retrofit.Builder()
@@ -554,23 +538,18 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    @Named("donations")
-    fun provideDonationsRetrofit(okHttpClient: OkHttpClient, moshi: Moshi): Retrofit {
-        val baseUrl = BuildConfig.DONATIONS_BASE_URL
-            .takeIf { it.isNotBlank() }
-            ?: error("DONATIONS_BASE_URL is missing. Set it in local.properties or local.dev.properties.")
-
-        return Retrofit.Builder()
-            .baseUrl(baseUrl)
+    @Named("supporters")
+    fun provideSupportersRetrofit(okHttpClient: OkHttpClient, moshi: Moshi): Retrofit =
+        Retrofit.Builder()
+            .baseUrl(normalizedBaseUrl(BuildConfig.SUPPORTERS_API_BASE_URL, "https://nuvio.tv/"))
             .client(okHttpClient)
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
-    }
 
     @Provides
     @Singleton
-    fun provideDonationsApi(@Named("donations") retrofit: Retrofit): DonationsApi =
-        retrofit.create(DonationsApi::class.java)
+    fun provideSupportersApi(@Named("supporters") retrofit: Retrofit): SupportersApi =
+        retrofit.create(SupportersApi::class.java)
 
     @Provides
     @Singleton

@@ -636,7 +636,6 @@
     <string name="audio_decoder_prefer_app">Foretræk app-decodere (FFmpeg)</string>
     <string name="audio_decoder_priority">Decoder-prioritet</string>
     <string name="audio_enable_downmix_title">Aktivér downmix</string>
-    <string name="audio_enable_downmix_subtitle">Bruger FFmpeg-downmix-stien. Når deaktiveret følger lyden den tidligere Android/enheds-sti.</string>
     <string name="audio_tunneled">Tunneleret afspilning</string>
     <string name="audio_tunneled_sub">Lyd/video-synkronisering på hardwareniveau. Kan forbedre afspilning på nogle Android TV-enheder</string>
     <string name="audio_force_optical_passthrough">Gennemtving AC-3 Transkodning (Optical/SPDIF)</string>
@@ -1731,11 +1730,9 @@
     <string name="auth_signin_qr_btn">Fortsæt med QR</string>
 
     <string name="auth_qr_title">Log ind med QR</string>
-    <string name="auth_qr_account_login">Kontologin</string>
     <string name="auth_qr_finishing">Afslutter login\u2026</string>
     <string name="auth_qr_code_label">Kode: %1$s</string>
     <string name="auth_qr_expires">Udløber om %1$s</string>
-    <string name="auth_qr_phone_hint">Brug din telefon til at logge ind med e-mail/adgangskode. TV bruger kun QR for hurtigere login.</string>
     <string name="auth_qr_scan_instruction">Scan QR, godkend i browseren, og vend tilbage hertil.</string>
     <string name="auth_qr_code_display">Kode: %1$s</string>
     <string name="auth_qr_refresh">Opdater QR</string>

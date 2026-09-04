@@ -463,6 +463,18 @@ fun AdvancedSettingsContent(
                         )
                     }
                 )
+                SettingsToggleRow(
+                    title = stringResource(R.string.advanced_rgb565),
+                    subtitle = stringResource(R.string.advanced_rgb565_subtitle),
+                    checked = uiState.rgb565Enabled,
+                    onToggle = {
+                        viewModel.onEvent(
+                            AdvancedSettingsEvent.SetRgb565Enabled(
+                                !uiState.rgb565Enabled
+                            )
+                        )
+                    }
+                )
                 val profileManager = remember {
                     dagger.hilt.android.EntryPointAccessors.fromApplication(
                         context.applicationContext,
@@ -477,6 +489,18 @@ fun AdvancedSettingsContent(
                     onToggle = {
                         scope.launch {
                             profileManager.setRememberLastProfileEnabled(!rememberLastProfileEnabled)
+                        }
+                    }
+                )
+
+                val confirmExitEnabled by profileManager.confirmExitEnabled.collectAsState()
+                SettingsToggleRow(
+                    title = stringResource(R.string.advanced_confirm_exit),
+                    subtitle = stringResource(R.string.advanced_confirm_exit_subtitle),
+                    checked = confirmExitEnabled,
+                    onToggle = {
+                        scope.launch {
+                            profileManager.setConfirmExitEnabled(!confirmExitEnabled)
                         }
                     }
                 )
@@ -541,6 +565,18 @@ fun AdvancedSettingsContent(
                         }
                     ),
                     onClick = { showGitHubIssueTokenDialog = true }
+                )
+                SettingsToggleRow(
+                    title = stringResource(R.string.advanced_player_stats_hud),
+                    subtitle = stringResource(R.string.advanced_player_stats_hud_subtitle),
+                    checked = uiState.playerStatsHudEnabled,
+                    onToggle = {
+                        viewModel.onEvent(
+                            AdvancedSettingsEvent.SetPlayerStatsHudEnabled(
+                                !uiState.playerStatsHudEnabled
+                            )
+                        )
+                    }
                 )
             }
         }

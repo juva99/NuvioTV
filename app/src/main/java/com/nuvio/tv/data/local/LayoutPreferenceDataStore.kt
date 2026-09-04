@@ -25,8 +25,11 @@ import com.nuvio.tv.domain.model.DEFAULT_CARD_DEPTH_EDGE_COVERAGE
 import com.nuvio.tv.domain.model.DEFAULT_CARD_DEPTH_EDGE_STRENGTH
 import com.nuvio.tv.domain.model.DEFAULT_CARD_DEPTH_SHEEN_STRENGTH
 import com.nuvio.tv.domain.model.DiscoverLocation
+import com.nuvio.tv.domain.model.EpisodeOptionsOverlayStyle
 import com.nuvio.tv.domain.model.FocusedPosterTrailerPlaybackTarget
+import com.nuvio.tv.domain.model.DetailImdbRatingsVisibility
 import com.nuvio.tv.domain.model.HomeLayout
+import com.nuvio.tv.domain.model.HomeImdbRatingsVisibility
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -99,7 +102,11 @@ class LayoutPreferenceDataStore @Inject constructor(
     private val cardDepthCastEnabledKey = booleanPreferencesKey("card_depth_cast_enabled")
     private val cardDepthTrailersEnabledKey = booleanPreferencesKey("card_depth_trailers_enabled")
     private val blurUnwatchedEpisodesKey = booleanPreferencesKey("blur_unwatched_episodes")
+    private val episodeOptionsOverlayStyleKey = stringPreferencesKey("episode_options_overlay_style")
+    private val homeImdbRatingsVisibilityKey = stringPreferencesKey("home_imdb_ratings_visibility")
+    private val detailImdbRatingsVisibilityKey = stringPreferencesKey("detail_imdb_ratings_visibility")
     private val useEpisodeThumbnailsInCwKey = booleanPreferencesKey("use_episode_thumbnails_in_cw")
+    private val continueWatchingEnabledKey = booleanPreferencesKey("continue_watching_enabled")
     private val continueWatchingCardStyleKey = stringPreferencesKey("continue_watching_card_style")
     private val showUnairedNextUpKey = booleanPreferencesKey("show_unaired_next_up")
     private val nextUpFromFurthestEpisodeKey = booleanPreferencesKey("next_up_from_furthest_episode")
@@ -147,6 +154,10 @@ class LayoutPreferenceDataStore @Inject constructor(
         } catch (e: IllegalArgumentException) {
             HomeLayout.MODERN
         }
+    }
+
+    val continueWatchingEnabled: Flow<Boolean> = profileFlow { prefs ->
+        prefs[continueWatchingEnabledKey] ?: true
     }
 
     val continueWatchingCardStyle: Flow<ContinueWatchingCardStyle> = profileFlow { prefs ->
@@ -207,13 +218,7 @@ class LayoutPreferenceDataStore @Inject constructor(
     }
 
     val sidebarCollapsedByDefault: Flow<Boolean> = profileFlow { prefs ->
-        val modernSidebarEnabled =
-            prefs[modernSidebarEnabledKey] ?: prefs[legacyModernSidebarEnabledKey] ?: false
-        if (modernSidebarEnabled) {
-            false
-        } else {
-            prefs[sidebarCollapsedKey] ?: false
-        }
+        prefs[sidebarCollapsedKey] ?: false
     }
 
     val modernSidebarEnabled: Flow<Boolean> = profileFlow { prefs ->
@@ -325,6 +330,25 @@ class LayoutPreferenceDataStore @Inject constructor(
 
     val blurUnwatchedEpisodes: Flow<Boolean> = profileFlow { prefs ->
         prefs[blurUnwatchedEpisodesKey] ?: false
+    }
+
+    val episodeOptionsOverlayStyle: Flow<EpisodeOptionsOverlayStyle> = profileFlow { prefs ->
+        val stored = prefs[episodeOptionsOverlayStyleKey] ?: EpisodeOptionsOverlayStyle.ARTWORK.name
+        runCatching { EpisodeOptionsOverlayStyle.valueOf(stored) }
+            .getOrDefault(EpisodeOptionsOverlayStyle.ARTWORK)
+    }
+
+    val homeImdbRatingsVisibility: Flow<HomeImdbRatingsVisibility> = profileFlow { prefs ->
+        val stored = prefs[homeImdbRatingsVisibilityKey] ?: HomeImdbRatingsVisibility.SHOW_ALL.name
+        runCatching { HomeImdbRatingsVisibility.valueOf(stored) }
+            .getOrDefault(HomeImdbRatingsVisibility.SHOW_ALL)
+    }
+
+    val detailImdbRatingsVisibility: Flow<DetailImdbRatingsVisibility> = profileFlow { prefs ->
+        val stored = prefs[detailImdbRatingsVisibilityKey] ?: DetailImdbRatingsVisibility.SHOW_ALL.name
+        runCatching { DetailImdbRatingsVisibility.valueOf(stored) }
+            .getOrDefault(DetailImdbRatingsVisibility.SHOW_ALL)
+            .asEpisodeVisibility()
     }
 
     val useEpisodeThumbnailsInCw: Flow<Boolean> = profileFlow { prefs ->
@@ -472,9 +496,7 @@ class LayoutPreferenceDataStore @Inject constructor(
 
     suspend fun setSidebarCollapsedByDefault(collapsed: Boolean) {
         store().edit { prefs ->
-            val modernSidebarEnabled =
-                prefs[modernSidebarEnabledKey] ?: prefs[legacyModernSidebarEnabledKey] ?: false
-            prefs[sidebarCollapsedKey] = if (modernSidebarEnabled) false else collapsed
+            prefs[sidebarCollapsedKey] = collapsed
         }
     }
 
@@ -482,9 +504,6 @@ class LayoutPreferenceDataStore @Inject constructor(
         store().edit { prefs ->
             prefs[modernSidebarEnabledKey] = enabled
             prefs.remove(legacyModernSidebarEnabledKey)
-            if (enabled) {
-                prefs[sidebarCollapsedKey] = false
-            }
         }
     }
 
@@ -661,9 +680,33 @@ class LayoutPreferenceDataStore @Inject constructor(
         }
     }
 
+    suspend fun setEpisodeOptionsOverlayStyle(style: EpisodeOptionsOverlayStyle) {
+        store().edit { prefs ->
+            prefs[episodeOptionsOverlayStyleKey] = style.name
+        }
+    }
+
+    suspend fun setHomeImdbRatingsVisibility(visibility: HomeImdbRatingsVisibility) {
+        store().edit { prefs ->
+            prefs[homeImdbRatingsVisibilityKey] = visibility.name
+        }
+    }
+
+    suspend fun setDetailImdbRatingsVisibility(visibility: DetailImdbRatingsVisibility) {
+        store().edit { prefs ->
+            prefs[detailImdbRatingsVisibilityKey] = visibility.asEpisodeVisibility().name
+        }
+    }
+
     suspend fun setUseEpisodeThumbnailsInCw(enabled: Boolean) {
         store().edit { prefs ->
             prefs[useEpisodeThumbnailsInCwKey] = enabled
+        }
+    }
+
+    suspend fun setContinueWatchingEnabled(enabled: Boolean) {
+        store().edit { prefs ->
+            prefs[continueWatchingEnabledKey] = enabled
         }
     }
 

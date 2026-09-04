@@ -2,6 +2,7 @@ package com.nuvio.tv.ui.screens.collection
 
 import com.nuvio.tv.ui.theme.NuvioTheme
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,6 +32,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -42,6 +44,11 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.focusRestorer
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import com.nuvio.tv.ui.util.dpadRepeatThrottle
 import com.nuvio.tv.ui.util.dpadVerticalFastScroll
 import com.nuvio.tv.ui.util.localizedContentType
@@ -132,10 +139,11 @@ fun FolderDetailScreen(
             failedEnrichmentIds = failedEnrichmentIds,
             onNavigateToDetail = onNavigateToDetail,
             onLoadMoreCatalog = viewModel::loadMoreForCatalog,
+            onSelectTab = viewModel::selectTab,
+            onLoadMoreForSelectedTab = { viewModel.loadMoreItems(viewModel.uiState.value.selectedTabIndex) },
             onSaveFocusState = { vi, vo, rk, ikm, m, ri, ii ->
                 viewModel.saveFollowLayoutFocusState(vi, vo, rk, ikm, m, ri, ii)
             },
-            onSaveGridFocusState = viewModel::saveFollowLayoutGridFocusState,
             onItemFocus = viewModel::onItemFocused,
             onPreloadAdjacentItem = viewModel::preloadAdjacentItem,
             onCatalogItemLongPress = { item, addonBaseUrl ->
@@ -261,6 +269,13 @@ private fun TabbedGridContent(
     onItemLongPress: (MetaPreview, String) -> Unit = { _, _ -> }
 ) {
     val tabFocusRequesters = remember(uiState.tabs.size) { uiState.tabs.indices.map { FocusRequester() } }
+    var gridHasFocus by remember { mutableStateOf(false) }
+    var gridScrollToTopTrigger by remember { mutableIntStateOf(0) }
+
+    // Grid Back: focus on grid -> move focus to active tab (grid stays scrolled).
+    BackHandler(enabled = gridHasFocus && uiState.tabs.size > 1) {
+        tabFocusRequesters.getOrNull(uiState.selectedTabIndex)?.let { runCatching { it.requestFocus() } }
+    }
 
     Row(
         modifier = Modifier
@@ -313,7 +328,10 @@ private fun TabbedGridContent(
                     Tab(
                         selected = index == uiState.selectedTabIndex,
                         onFocus = { onSelectTab(index) },
-                        onClick = { onSelectTab(index) },
+                        onClick = {
+                            onSelectTab(index)
+                            gridScrollToTopTrigger++
+                        },
                         modifier = if (index < tabFocusRequesters.size) {
                             Modifier.focusRequester(tabFocusRequesters[index])
                         } else Modifier
@@ -365,7 +383,9 @@ private fun TabbedGridContent(
         }
         currentTab.catalogRow != null -> {
             val items = currentTab.catalogRow.items
-            val posterCardStyle = PosterCardDefaults.Style
+            val posterCardStyle = PosterCardDefaults.Style.copy(
+                cornerRadius = uiState.posterCardCornerRadiusDp.dp
+            )
             val itemFocusRequesters = remember(uiState.selectedTabIndex) { mutableMapOf<String, FocusRequester>() }
             var lastFocusedItemKey by remember(
                 uiState.selectedTabIndex,
@@ -377,6 +397,13 @@ private fun TabbedGridContent(
                 initialFirstVisibleItemIndex = tabFocusState.verticalScrollIndex,
                 initialFirstVisibleItemScrollOffset = tabFocusState.verticalScrollOffset
             )
+
+            // Scroll grid to top when OK is pressed on a tab or tab changes
+            LaunchedEffect(gridScrollToTopTrigger, uiState.selectedTabIndex) {
+                if (gridState.firstVisibleItemIndex > 0 || gridState.firstVisibleItemScrollOffset > 0) {
+                    gridState.scrollToItem(0, 0)
+                }
+            }
 
             DisposableEffect(Unit) {
                 onDispose {
@@ -433,6 +460,7 @@ private fun TabbedGridContent(
                 columns = GridCells.Adaptive(minSize = posterCardStyle.width),
                 modifier = Modifier
                     .fillMaxSize()
+                    .onFocusChanged { gridHasFocus = it.hasFocus }
                     .focusRestorer {
                         lastFocusedItemKey?.let { itemFocusRequesters[it] } ?: FocusRequester.Default
                     }
@@ -535,7 +563,14 @@ private fun RowsContent(
     onSaveFocusState: (Int, Int, String?, Map<String, String>, Map<String, Int>, Int, Int) -> Unit,
     isItemWatched: (MetaPreview) -> Boolean = { false },
     onItemFocus: (MetaPreview) -> Unit = {},
-    onItemLongPress: (MetaPreview, String) -> Unit = { _, _ -> }
+    onItemLongPress: (MetaPreview, String) -> Unit = { _, _ -> },
+    posterCardStyle: PosterCardStyle = PosterCardDefaults.Style,
+    focusedPosterBackdropExpandEnabled: Boolean = false,
+    focusedPosterBackdropExpandDelaySeconds: Int = 3,
+    focusedPosterBackdropTrailerEnabled: Boolean = false,
+    focusedPosterBackdropTrailerMuted: Boolean = true,
+    trailerPreviewUrls: Map<String, String> = emptyMap(),
+    trailerPreviewAudioUrls: Map<String, String> = emptyMap()
 ) {
     val sourceTabs = uiState.tabs.filter { tab ->
         if (tab.isAllTab) return@filter false
@@ -561,6 +596,22 @@ private fun RowsContent(
     val focusedItemByRow = remember { mutableStateMapOf<String, Int>() }
     val currentFocusedRowKey = remember { mutableStateOf(focusState.focusedRowKey) }
     val folderScope = rememberCoroutineScope()
+
+    // Improved Back: scroll to first item in row before exiting collection
+    BackHandler(enabled = run {
+        val rowKey = currentFocusedRowKey.value ?: return@run false
+        val itemIndex = focusedItemByRow[rowKey] ?: rowFocusedItemIndex[rowKey] ?: 0
+        itemIndex > 0
+    }) {
+        val rowKey = currentFocusedRowKey.value ?: return@BackHandler
+        val listState = rowStates[rowKey]
+        rowFocusedItemIndex[rowKey] = 0
+        focusedItemByRow[rowKey] = 0
+        folderScope.launch {
+            listState?.scrollToItem(0, 0)
+            rowFocusRequesters[rowKey]?.let { runCatching { it.requestFocus() } }
+        }
+    }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -714,7 +765,7 @@ private fun RowsContent(
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(PosterCardDefaults.Style.height),
+                                    .height(posterCardStyle.height),
                                 contentAlignment = Alignment.Center
                             ) {
                                 LoadingIndicator()
@@ -732,7 +783,7 @@ private fun RowsContent(
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(PosterCardDefaults.Style.height),
+                                    .height(posterCardStyle.height),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(text = tab.error, color = NuvioTheme.colors.TextSecondary)
@@ -750,6 +801,13 @@ private fun RowsContent(
                             catalogRow = catalogRow,
                             onItemClick = onNavigateToDetail,
                             onItemLongPress = onItemLongPress,
+                            posterCardStyle = posterCardStyle,
+                            focusedPosterBackdropExpandEnabled = focusedPosterBackdropExpandEnabled,
+                            focusedPosterBackdropExpandDelaySeconds = focusedPosterBackdropExpandDelaySeconds,
+                            focusedPosterBackdropTrailerEnabled = focusedPosterBackdropTrailerEnabled,
+                            focusedPosterBackdropTrailerMuted = focusedPosterBackdropTrailerMuted,
+                            trailerPreviewUrls = trailerPreviewUrls,
+                            trailerPreviewAudioUrls = trailerPreviewAudioUrls,
                             onSeeAll = {
                                 onLoadMoreCatalog(
                                     catalogRow.catalogId,
@@ -798,8 +856,9 @@ private fun FollowLayoutContent(
     failedEnrichmentIds: Set<String> = emptySet(),
     onNavigateToDetail: (String, String, String) -> Unit,
     onLoadMoreCatalog: (String, String, String) -> Unit = { _, _, _ -> },
+    onSelectTab: (Int) -> Unit = {},
+    onLoadMoreForSelectedTab: () -> Unit = {},
     onSaveFocusState: (Int, Int, String?, Map<String, String>, Map<String, Int>, Int, Int) -> Unit,
-    onSaveGridFocusState: (Int, Int, String?) -> Unit,
     onItemFocus: (MetaPreview) -> Unit = {},
     onPreloadAdjacentItem: (MetaPreview) -> Unit = {},
     onCatalogItemLongPress: (MetaPreview, String) -> Unit = { _, _ -> },
@@ -833,38 +892,47 @@ private fun FollowLayoutContent(
     val loadMoreLabel = stringResource(R.string.action_load_more)
 
     when (uiState.homeLayout) {
-        HomeLayout.CLASSIC -> ClassicHomeContent(
-            uiState = homeState,
-            posterCardStyle = posterCardStyle,
-            focusState = focusState,
-            trailerPreviewUrls = trailerPreviewUrls,
-            trailerPreviewAudioUrls = trailerPreviewAudioUrls,
-            onNavigateToDetail = onNavigateToDetail,
-            onContinueWatchingClick = noOpCwClick,
-            onNavigateToCatalogSeeAll = onLoadMoreCatalog,
-            onNavigateToFolderDetail = noOpFolderDetail,
-            onRemoveContinueWatching = noOpRemoveCw,
-            isCatalogItemWatched = isItemWatched,
-            catalogSeeAllLabel = loadMoreLabel,
-            onRequestTrailerPreview = { item ->
-                onRequestTrailerPreview(item.id, item.name, item.releaseInfo, item.apiType)
-            },
-            onItemFocus = onItemFocus,
-            onSaveFocusState = onSaveFocusState
-        )
-        HomeLayout.GRID -> GridHomeContent(
-            uiState = homeState,
-            gridFocusState = focusState,
-            onNavigateToDetail = onNavigateToDetail,
-            onContinueWatchingClick = noOpCwClick,
-            onNavigateToCatalogSeeAll = onLoadMoreCatalog,
-            onNavigateToFolderDetail = noOpFolderDetail,
-            onRemoveContinueWatching = noOpRemoveCw,
-            isCatalogItemWatched = isItemWatched,
-            catalogSeeAllLabel = loadMoreLabel,
-            posterCardStyle = posterCardStyle,
-            onSaveGridFocusState = onSaveGridFocusState
-        )
+        HomeLayout.CLASSIC -> {
+            val classicPosterCardStyle = remember(posterCardStyle) {
+                val scale = 1.35f // matches CLASSIC_CATALOG_POSTER_SCALE in ClassicHomeContent
+                posterCardStyle.copy(
+                    width = posterCardStyle.width * scale,
+                    height = posterCardStyle.height * scale
+                )
+            }
+            RowsContent(
+                uiState = uiState,
+                focusState = focusState,
+                onNavigateToDetail = onNavigateToDetail,
+                onLoadMoreCatalog = onLoadMoreCatalog,
+                onSaveFocusState = onSaveFocusState,
+                isItemWatched = isItemWatched,
+                onItemFocus = onItemFocus,
+                onItemLongPress = onCatalogItemLongPress,
+                posterCardStyle = classicPosterCardStyle,
+                focusedPosterBackdropExpandEnabled = homeState.focusedPosterBackdropExpandEnabled,
+                focusedPosterBackdropExpandDelaySeconds = homeState.focusedPosterBackdropExpandDelaySeconds,
+                focusedPosterBackdropTrailerEnabled = homeState.focusedPosterBackdropTrailerEnabled,
+                focusedPosterBackdropTrailerMuted = homeState.focusedPosterBackdropTrailerMuted,
+                trailerPreviewUrls = trailerPreviewUrls,
+                trailerPreviewAudioUrls = trailerPreviewAudioUrls
+            )
+        }
+        HomeLayout.GRID -> {
+            Column(modifier = Modifier.fillMaxSize()) {
+                TabbedGridContent(
+                    uiState = uiState,
+                    folder = uiState.folder ?: return,
+                    tabFocusState = FolderDetailGridFocusState(),
+                    onSelectTab = onSelectTab,
+                    onNavigateToDetail = onNavigateToDetail,
+                    isItemWatched = isItemWatched,
+                    onLoadMore = onLoadMoreForSelectedTab,
+                    onSaveFocusState = { _, _, _ -> },
+                    onItemLongPress = onCatalogItemLongPress
+                )
+            }
+        }
         HomeLayout.MODERN -> ModernHomeContent(
             uiState = homeState,
             modernPresentation = homeState.modernHomePresentation,
