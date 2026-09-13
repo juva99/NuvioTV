@@ -2,6 +2,7 @@ package com.nuvio.tv.baselineprofile
 
 import androidx.benchmark.macro.junit4.BaselineProfileRule
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
@@ -21,7 +22,9 @@ class BaselineProfileGenerator {
 
     @Test
     fun generate() {
-        val targetPackage = "com.nuvio.tv"
+        // Resolve the package under test so the same journey works for the existing fullBenchmark
+        // APK (com.nuvio.tv.debug) and the normal release APK (com.nuvio.tv).
+        val targetPackage = InstrumentationRegistry.getInstrumentation().targetContext.packageName
         rule.collect(
             packageName = targetPackage,
             includeInStartupProfile = true
