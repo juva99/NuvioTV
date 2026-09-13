@@ -56,6 +56,11 @@ jobs:
             for (const item of items) {
               const issue_number = item.number;
 
+              if ((item.body || "").includes("<!-- nuviotv:automatic-subtitle-sync-report -->")) {
+                core.info(`#${issue_number}: skipping automatic subtitle-sync report.`);
+                continue;
+              }
+
               if (await hasBeenReopened(issue_number)) {
                 core.info(`#${issue_number}: skipping because it was manually reopened.`);
                 continue;

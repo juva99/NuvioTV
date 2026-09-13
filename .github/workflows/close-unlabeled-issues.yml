@@ -27,14 +27,18 @@ jobs:
             const inputs = context.payload.inputs || {};
 
             const dryRun = String(inputs.dry_run || "false").toLowerCase() === "true";
+            const CLOSE_AFTER_DAYS = 30;
+            const cutoff = new Date(Date.now() - CLOSE_AFTER_DAYS * 24 * 60 * 60 * 1000)
+              .toISOString()
+              .slice(0, 10);
             const closeMarker = "<!-- nuviotv-bot:close-unlabeled -->";
 
             const items = await github.paginate(github.rest.search.issuesAndPullRequests, {
-              q: `repo:${owner}/${repo} is:issue is:open no:label`,
+              q: `repo:${owner}/${repo} is:issue is:open no:label updated:<${cutoff}`,
               per_page: 100,
             });
 
-            core.info(`Found ${items.length} open unlabeled issues.`);
+            core.info(`Found ${items.length} open unlabeled issues inactive for ${CLOSE_AFTER_DAYS} days.`);
 
             async function hasBeenReopened(issueNumber) {
               const events = await github.paginate(github.rest.issues.listEvents, {
@@ -48,6 +52,11 @@ jobs:
 
             for (const item of items) {
               const issueNumber = item.number;
+
+              if ((item.body || "").includes("<!-- nuviotv:automatic-subtitle-sync-report -->")) {
+                core.info(`#${issueNumber}: skipping automatic subtitle-sync report.`);
+                continue;
+              }
 
               if (await hasBeenReopened(issueNumber)) {
                 core.info(`#${issueNumber}: skipping because it was manually reopened.`);
@@ -74,7 +83,7 @@ jobs:
                 const body =
                   `${closeMarker}\n` +
                   `Sorry about the churn here, and thanks for taking the time to report this.\n\n` +
-                  `Closing this issue because it does not have any labels.\n\n` +
+                  `Closing this issue because it has no labels and has been inactive for more than ${CLOSE_AFTER_DAYS} days.\n\n` +
                   `Issue labels and triage rules were introduced later, so older unlabeled issues are no longer tracked reliably.\n\n` +
                   `If you are still facing this problem, please open a new issue using the appropriate issue template and label so it can be triaged correctly.`;
 

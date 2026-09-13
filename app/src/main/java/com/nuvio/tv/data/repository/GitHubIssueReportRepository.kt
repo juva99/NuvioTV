@@ -124,6 +124,7 @@ internal fun buildSubtitleSyncIssuePayload(
     val safeSubtitleUrl = sanitizeSubtitleUrl(input.subtitleUrl)
 
     val body = buildString {
+        appendLine("<!-- nuviotv:automatic-subtitle-sync-report -->")
         appendLine("## Automatic subtitle-sync failure")
         appendLine()
         appendLine("- App version: `${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})`")
@@ -176,7 +177,8 @@ internal fun buildSubtitleSyncIssuePayload(
 
     return GitHubIssueCreateRequestDto(
         title = "[Subtitle Sync] $mediaTitle",
-        body = body.take(MAX_ISSUE_BODY_LENGTH)
+        body = body.take(MAX_ISSUE_BODY_LENGTH),
+        labels = listOf("bug")
     )
 }
 

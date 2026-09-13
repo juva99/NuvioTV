@@ -7,6 +7,7 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.cache.CacheDataSink
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.SimpleCache
@@ -180,7 +181,10 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
 
         val baseExtractorsFactory = customExtractorsFactory ?: DefaultExtractorsFactory()
         val extractorsFactory = baseExtractorsFactory.withNuvioMp4Extractor()
-        val defaultFactory = DefaultMediaSourceFactory(progressiveFactory, extractorsFactory).apply {
+        val defaultFactory = DefaultMediaSourceFactory(
+            createSchemeAwareProgressiveDataSourceFactory(context, progressiveFactory),
+            extractorsFactory
+        ).apply {
             setLoadErrorHandlingPolicy(loadErrorHandlingPolicy)
             customSubtitleParserFactory?.let { parserFactory ->
                 setSubtitleParserFactory(parserFactory)
@@ -264,6 +268,11 @@ internal class PlayerMediaSourceFactory(private val context: Context) {
         internal const val DEFAULT_USER_AGENT =
             "Mozilla/5.0 (Linux; Android 13; Android TV) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+        internal fun createSchemeAwareProgressiveDataSourceFactory(
+            context: Context,
+            progressiveFactory: DataSource.Factory
+        ): DataSource.Factory = DefaultDataSource.Factory(context, progressiveFactory)
 
         private const val MIME_PROBE_CACHE_SIZE = 64
 

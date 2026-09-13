@@ -276,28 +276,17 @@ internal fun SubtitleSelectionOverlay(
         selectedOptionId,
         sessionInternalTracks,
         sessionSelectedInternalIndex,
-        sessionSelectedAddonSubtitle
+        selectedAddonSubtitle
     ) {
         if (!useLibass && !isUsingMpv) return@remember false
-        val selectedOption = subtitleOptions.firstOrNull { it.id == selectedOptionId }
-        val isAss = when (selectedOption?.kind) {
-            SubtitleOptionKind.INTERNAL -> {
-                val track = selectedOption.internalTrackIndex?.let { sessionInternalTracks.getOrNull(it) }
-                val codec = track?.codec?.lowercase(java.util.Locale.US).orEmpty()
-                codec.contains("ass") || codec.contains("ssa") || track?.name?.contains("ASS", ignoreCase = true) == true
-            }
-            SubtitleOptionKind.ADDON -> {
-                val url = selectedOption.addonSubtitle?.url?.lowercase(java.util.Locale.US).orEmpty()
-                url.contains(".ass") || url.contains(".ssa")
-            }
-            null -> {
-                val currentInternalTrack = sessionInternalTracks.getOrNull(sessionSelectedInternalIndex)
-                val internalCodec = currentInternalTrack?.codec?.lowercase(java.util.Locale.US).orEmpty()
-                val addonUrl = sessionSelectedAddonSubtitle?.url?.lowercase(java.util.Locale.US).orEmpty()
-                internalCodec.contains("ass") || internalCodec.contains("ssa") ||
-                    currentInternalTrack?.name?.contains("ASS", ignoreCase = true) == true ||
-                    addonUrl.contains(".ass") || addonUrl.contains(".ssa")
-            }
+        val liveAddonUrl = selectedAddonSubtitle?.url?.lowercase(java.util.Locale.US).orEmpty()
+        val liveInternalTrack = internalTracks.getOrNull(selectedInternalIndex)
+        val internalCodec = liveInternalTrack?.codec?.lowercase(java.util.Locale.US).orEmpty()
+        val isAss = if (selectedAddonSubtitle != null) {
+            liveAddonUrl.contains(".ass") || liveAddonUrl.contains(".ssa")
+        } else {
+            internalCodec.contains("ass") || internalCodec.contains("ssa") ||
+                liveInternalTrack?.name?.contains("ASS", ignoreCase = true) == true
         }
         isAss && (isUsingMpv || useLibass)
     }
@@ -591,7 +580,7 @@ internal fun SubtitleSelectionOverlay(
                     SubtitleStyleRail(
                         subtitleStyle = subtitleStyle,
                         subtitleDelayMs = subtitleDelayMs,
-                        selectedAddonSubtitle = sessionSelectedAddonSubtitle,
+                        selectedAddonSubtitle = selectedAddonSubtitle,
                         automaticSyncAvailable = automaticSyncAvailable,
                         automaticSyncRunning = automaticSyncRunning,
                         automaticSyncMessage = automaticSyncMessage,

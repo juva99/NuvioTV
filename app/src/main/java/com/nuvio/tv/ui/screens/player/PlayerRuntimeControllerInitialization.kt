@@ -166,7 +166,11 @@ internal fun PlayerRuntimeController.initializePlayer(
             if (allowEngineFailover) {
                 startupEngineFailoverTriggered = false
             }
-            synchronizedSubtitleOverride = null
+            if (synchronizedSubtitleOverride?.streamUrl != url ||
+                synchronizedSubtitleOverride?.contentIdentity != currentSubtitleContentIdentity()
+            ) {
+                synchronizedSubtitleOverride = null
+            }
             automaticSubtitleSyncJob?.cancel()
             automaticSubtitleSyncJob = null
             activeSubtitleReferenceScanner?.close()
@@ -820,9 +824,12 @@ internal fun PlayerRuntimeController.initializePlayer(
                 shouldStripSdhProvider = {
                     currentPlayerSettingsForReport.subtitleStyle.stripSdh
                 },
-                isSidecarAddonSubtitleActiveProvider = {
-                    isSidecarAddonSubtitleActive()
-                },
+                 isSidecarAddonSubtitleActiveProvider = {
+                     isSidecarAddonSubtitleActive()
+                 },
+                 onExoSubtitleCuesDeliveredProvider = {
+                     markExoSubtitleCuesDelivered()
+                 },
                 videoBoundsFractionProvider = {
                     val pv = exoPlayerView
                     if (pv != null) pv.videoBoundsFraction(videoAspectRatio) else null
@@ -1953,7 +1960,29 @@ internal suspend fun PlayerRuntimeController.prepareStreamStartSubtitles(
         libassPipelineSwitchInFlight = false
         hasDetectedAssSsaTrackForCurrentStream = false
     }
+    val synchronizedAddonSubtitle = _uiState.value.selectedAddonSubtitle
+        ?.takeIf {
+            !subtitleDisabledByPersistedPreference &&
+                synchronizedSubtitleOverrideFor(it) != null
+        }
     resetAddonSubtitleStateForNewStream()
+    if (synchronizedAddonSubtitle != null) {
+        autoSubtitleSelected = true
+        pendingAddonSubtitleLanguage =
+            PlayerSubtitleUtils.normalizeLanguageCode(synchronizedAddonSubtitle.lang)
+        pendingAddonSubtitleTrackId = buildAddonSubtitleTrackId(synchronizedAddonSubtitle)
+        _uiState.update {
+            it.copy(
+                selectedAddonSubtitle = synchronizedAddonSubtitle,
+                selectedSubtitleTrackIndex = -1
+            )
+        }
+        return StartupSubtitlePreparation(
+            fetchedSubtitles = emptyList(),
+            attachedSubtitles = listOf(synchronizedAddonSubtitle),
+            fetchCompleted = false
+        )
+    }
     return prepareStartupSubtitles()
 }
 
@@ -2033,6 +2062,7 @@ private class SubtitleOffsetRenderersFactory(
     private val shouldNormalizeCuePositionProvider: () -> Boolean,
     private val shouldStripSdhProvider: () -> Boolean,
     private val isSidecarAddonSubtitleActiveProvider: () -> Boolean = { false },
+    private val onExoSubtitleCuesDeliveredProvider: () -> Unit = {},
     private val videoBoundsFractionProvider: () -> RectF?,
     private val gainAudioProcessor: GainAudioProcessor,
     private val downmixEnabled: Boolean,
@@ -2162,6 +2192,7 @@ private class SubtitleOffsetRenderersFactory(
             delegate = SdhFilteringTextOutput(output, shouldStripSdhProvider),
             shouldNormalizeCuePositionProvider = shouldNormalizeCuePositionProvider,
             isSidecarAddonSubtitleActiveProvider = isSidecarAddonSubtitleActiveProvider,
+            onExoSubtitleCuesDeliveredProvider = onExoSubtitleCuesDeliveredProvider,
             videoBoundsFractionProvider = videoBoundsFractionProvider
         )
         val startIndex = out.size
@@ -2211,6 +2242,7 @@ private class CueNormalizingTextOutput(
     private val delegate: TextOutput,
     private val shouldNormalizeCuePositionProvider: () -> Boolean,
     private val isSidecarAddonSubtitleActiveProvider: () -> Boolean,
+    private val onExoSubtitleCuesDeliveredProvider: () -> Unit,
     private val videoBoundsFractionProvider: () -> RectF?
 ) : TextOutput {
 
@@ -2218,6 +2250,7 @@ private class CueNormalizingTextOutput(
         if (isSidecarAddonSubtitleActiveProvider()) {
             return
         }
+        onExoSubtitleCuesDeliveredProvider()
         val cues = cueGroup.cues
         if (cues.isEmpty()) {
             delegate.onCues(cueGroup)
@@ -2250,6 +2283,7 @@ private class CueNormalizingTextOutput(
         if (isSidecarAddonSubtitleActiveProvider()) {
             return
         }
+        onExoSubtitleCuesDeliveredProvider()
         if (cues.isEmpty()) {
             delegate.onCues(cues)
             return

@@ -26,6 +26,11 @@ jobs:
             const body = issue.body || "";
             const labels = (issue.labels || []).map(l => (typeof l === "string" ? l : l.name).toLowerCase());
 
+            if (body.includes("<!-- nuviotv:automatic-subtitle-sync-report -->")) {
+              core.info(`#${issue_number}: skipping human-form triage for an automatic report.`);
+              return;
+            }
+
             // An edit can happen after a human has reopened an issue. Preserve
             // that explicit triage decision instead of closing it again.
             const events = await github.paginate(github.rest.issues.listEvents, {

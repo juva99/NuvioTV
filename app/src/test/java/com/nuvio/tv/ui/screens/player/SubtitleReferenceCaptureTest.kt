@@ -4,6 +4,7 @@ import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MimeTypes
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -89,5 +90,23 @@ class SubtitleReferenceCaptureTest {
 
         assertFalse(isSubtitleDisplaySample(MimeTypes.APPLICATION_TX3G, empty, 0, empty.size))
         assertTrue(isSubtitleDisplaySample(MimeTypes.APPLICATION_TX3G, dialogue, 0, dialogue.size))
+    }
+
+    @Test
+    fun `clearing the store rejects cues from the previous playback generation`() {
+        val store = SubtitleReferenceCueStore()
+        val format = Format.Builder()
+            .setId("3")
+            .setLanguage("en")
+            .setLabel("English")
+            .setSampleMimeType(MimeTypes.APPLICATION_SUBRIP)
+            .build()
+        val generation = store.currentGeneration()
+        val key = store.register(format, generation)
+
+        store.clear()
+        store.addCue(key!!, SrtCue(1_000L, 2_000L, " "), generation)
+
+        assertEquals(emptyList<SubtitleReferenceTrack>(), store.snapshot())
     }
 }

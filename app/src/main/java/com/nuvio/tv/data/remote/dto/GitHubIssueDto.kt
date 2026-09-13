@@ -6,7 +6,8 @@ import com.squareup.moshi.JsonClass
 @JsonClass(generateAdapter = true)
 data class GitHubIssueCreateRequestDto(
     val title: String,
-    val body: String
+    val body: String,
+    val labels: List<String> = emptyList()
 )
 
 @JsonClass(generateAdapter = true)

@@ -1,6 +1,7 @@
 package com.nuvio.tv.data.repository
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -15,6 +16,8 @@ class GitHubIssueReportRepositoryTest {
         )
 
         assertTrue(payload.title.startsWith("[Subtitle Sync]"))
+        assertEquals(listOf("bug"), payload.labels)
+        assertTrue(payload.body.contains("automatic-subtitle-sync-report"))
         assertTrue(payload.body.contains("https://subtitles.example/file.srt"))
         assertTrue(payload.body.contains("abcdef1234567890"))
         assertTrue(payload.body.contains("episode.mkv"))

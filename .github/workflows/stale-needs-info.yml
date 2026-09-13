@@ -45,6 +45,12 @@ jobs:
             const items = await listOpenNeedsInfoIssues();
             for (const item of items) {
               const issue_number = item.number;
+
+              if ((item.body || "").includes("<!-- nuviotv:automatic-subtitle-sync-report -->")) {
+                core.info(`#${issue_number}: skipping automatic subtitle-sync report.`);
+                continue;
+              }
+
               const updatedAtMs = new Date(item.updated_at).getTime();
 
               // Reopening is an explicit human decision that overrides automated

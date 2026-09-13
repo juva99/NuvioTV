@@ -27,4 +27,29 @@ class SrtDocumentTest {
         )
         assertEquals(emptyList<SrtCue>(), document.cues)
     }
+
+    @Test
+    fun `automatic sync parser accepts WebVTT cue identifiers`() {
+        val document = parseAutomaticSubtitleDocument(
+            """
+            WEBVTT
+
+            intro
+            00:00:01.000 --> 00:00:02.500
+            Hello
+
+            00:00:03.000 --> 00:00:04.000
+            World
+            """.trimIndent(),
+            "https://subtitles.example/download/1"
+        )
+
+        assertEquals(
+            listOf(
+                SrtCue(1_000L, 2_500L, "Hello"),
+                SrtCue(3_000L, 4_000L, "World")
+            ),
+            document.cues
+        )
+    }
 }

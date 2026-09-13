@@ -76,7 +76,7 @@ jobs:
 
           unexpected_changes="$(
             git diff --name-only "${CURRENT_BUMP}..${RELEASE_COMMIT}" \
-              | grep -Ev '^(\.github/workflows/(android-release|beta-release)\.yml|scripts/release-metadata\.sh|scripts/generate-release-notes\.sh|scripts/generate_release_notes\.py|scripts/release_notes/.*|scripts/tests/.*)$' \
+              | grep -Ev '^(\.github/workflows/(android-release|subtitle-sync-beta-release)\.yml|scripts/release-metadata\.sh|scripts/generate-release-notes\.sh|scripts/generate_release_notes\.py|scripts/release_notes/.*|scripts/tests/.*)$' \
               || true
           )"
           if [[ -n "${unexpected_changes}" ]]; then
@@ -186,6 +186,13 @@ jobs:
           set_property NUVIO_RELEASE_KEY_ALIAS "${RELEASE_KEY_ALIAS}"
           set_property NUVIO_RELEASE_KEY_PASSWORD "${RELEASE_KEY_PASSWORD}"
           set_property NUVIO_RELEASE_STORE_PASSWORD "${RELEASE_STORE_PASSWORD}"
+
+          {
+            echo "GITHUB_ISSUE_OWNER=${{ github.repository_owner }}"
+            echo "GITHUB_ISSUE_REPO=${{ github.event.repository.name }}"
+            echo "GITHUB_ISSUE_REPOSITORY_ID=${{ github.event.repository.id }}"
+            echo "GITHUB_ISSUE_CLIENT_ID=${{ vars.NUVIO_GITHUB_ISSUE_CLIENT_ID }}"
+          } >> "$GITHUB_ENV"
 
           required_properties=(
             NUVIO_RELEASE_STORE_PASSWORD

@@ -59,6 +59,12 @@ internal data class SubtitleSyncPlan(
  *
  * Anything failing either guard falls back to the unscaled result -- usually null, so the user sees
  * the existing low-confidence message.
+ *
+ * A passive reference can cover only the beginning (or another portion) of the target timeline.
+ * In that case a direct offset-only fit can still clear the confidence threshold while a fixed-rate
+ * candidate is the better explanation of the complete track. Partial references therefore pay the
+ * rate-scan cost; the direct fit remains a candidate, but only rescaled fits that clear both guards
+ * may compete with it. References that span the target keep the direct fast path.
  */
 internal object SubtitleRateAwareAligner {
 
@@ -78,6 +84,28 @@ internal object SubtitleRateAwareAligner {
      * real drift (a 15 minute partial playback capture) rests on 244 and a full film on 1716.
      */
     private const val MIN_RESCALED_MATCHED_CUES = 200
+
+    /**
+     * Partial references need extra confidence headroom before a rate correction is extrapolated
+     * over the unseen target. The valid fifteen-minute pulldown recovery measures about 0.8299,
+     * while the nearest unsupported 1.0025 drift measured 0.8006; this leaves a narrow margin
+     * between the observed cases without changing the full-reference gate.
+     */
+    private const val MIN_PARTIAL_RESCALED_CONFIDENCE = 0.82
+
+    /**
+     * A reference covering less than this fraction of the target is treated as substantially
+     * partial for rate-candidate safety. The span margin tolerates normal frame-rate differences
+     * and trailing metadata while still identifying playback-sized captures.
+     */
+    private const val MIN_PARTIAL_REFERENCE_SPAN_RATIO = 0.90
+
+    /**
+     * Allow ordinary leading/trailing cue omissions when deciding whether a reference spans the
+     * target. A substantially shorter passive capture must be scanned, even when its direct fit is
+     * confident, because its confidence describes only the observed portion.
+     */
+    private const val REFERENCE_EDGE_TOLERANCE_MS = 2L * 60L * 1000L
 
     /**
      * Ratios to resample the target by, covering the film/PAL/NTSC conversions that actually occur.
@@ -102,29 +130,99 @@ internal object SubtitleRateAwareAligner {
 
     fun align(reference: List<SrtCue>, target: List<SrtCue>): SubtitleSyncPlan? {
         // The overwhelmingly common case is a correctly framed subtitle, so it must not pay for the
-        // rate scan: a single alignment is ~80ms and every extra ratio costs the same again.
+        // rate scan: a single alignment is ~80ms and every extra ratio costs the same again. A
+        // partial passive reference is intentionally excluded from this shortcut; see the class
+        // documentation above.
         val direct = SubtitleTimingAligner.align(reference, target)
             ?.let { SubtitleSyncPlan(rateRatio = 1.0, model = it) }
-        if (direct != null && direct.confidence >= MIN_RESCALED_CONFIDENCE) return direct
+        val directSpansTarget = direct?.let {
+            referenceSpansTarget(reference, target, it)
+        } == true
+        val partialReference = referenceIsSubstantiallyShorter(reference, target)
+        if (direct != null &&
+            direct.confidence >= MIN_RESCALED_CONFIDENCE &&
+            directSpansTarget &&
+            !partialReference
+        ) {
+            return direct
+        }
 
+        val minimumRescaledConfidence = if (partialReference) {
+            MIN_PARTIAL_RESCALED_CONFIDENCE
+        } else {
+            MIN_RESCALED_CONFIDENCE
+        }
         val document = SrtDocument(target)
         val rescaled = RATE_RATIOS.mapNotNull { ratio ->
             SubtitleTimingAligner.align(reference, document.scaledBy(ratio).cues)
                 ?.takeIf {
-                    it.confidence >= MIN_RESCALED_CONFIDENCE &&
+                    it.confidence >= minimumRescaledConfidence &&
                         it.matchedCueCount >= MIN_RESCALED_MATCHED_CUES
                 }
                 ?.let { SubtitleSyncPlan(rateRatio = ratio, model = it) }
         }
 
+        // Preserve the established direct-fit policy; extrapolating a rate from a partial capture
+        // deliberately requires more confidence. The direct fallback is not subject to the
+        // rescaling evidence gates, so short but otherwise valid offset-only fits still work.
+        val candidates = if (partialReference) {
+            // A direct fit only describes the observed prefix. Never let it beat a validated
+            // fixed-rate fit that can be safely extrapolated over the complete target.
+            rescaled
+        } else {
+            rescaled.toMutableList().apply {
+                if (direct != null && direct.confidence >= MIN_RESCALED_CONFIDENCE) {
+                    add(direct)
+                }
+            }
+        }
+
         // Ties are broken towards the least aggressive rescale, then the better supported model, so
         // the choice never depends on candidate ordering.
-        return rescaled.maxWithOrNull(
-            compareBy<SubtitleSyncPlan> { it.confidence }
-                .thenByDescending { abs(ln(it.rateRatio)) }
-                .thenBy { it.model.matchedCueCount }
+        return candidates.minWithOrNull(
+            compareByDescending<SubtitleSyncPlan> { it.confidence }
+                .thenBy { abs(ln(it.rateRatio)) }
+                .thenByDescending { it.model.matchedCueCount }
                 .thenBy { it.rateRatio }
         ) ?: direct
+    }
+
+    /**
+     * Checks coverage after applying the direct model's offset range to the target edges. Using the
+     * model offsets handles ordinary constant desync while still treating a short beginning-only
+     * or middle-only capture as partial. The tolerance is intentionally generous enough for
+     * missing credits and intro metadata, but far below a playback-sized capture.
+     */
+    private fun referenceSpansTarget(
+        reference: List<SrtCue>,
+        target: List<SrtCue>,
+        direct: SubtitleSyncPlan
+    ): Boolean {
+        if (reference.isEmpty() || target.isEmpty() || direct.model.segments.isEmpty()) return false
+
+        val referenceStartMs = reference.minOf(SrtCue::startMs)
+        val referenceEndMs = reference.maxOf(SrtCue::endMs)
+        val targetStartMs = target.minOf(SrtCue::startMs)
+        val targetEndMs = target.maxOf(SrtCue::endMs)
+        val minimumOffsetMs = direct.model.segments.minOf(SubtitleSyncSegment::offsetMs)
+        val maximumOffsetMs = direct.model.segments.maxOf(SubtitleSyncSegment::offsetMs)
+        val correctedTargetStartMs = targetStartMs + minimumOffsetMs
+        val correctedTargetEndMs = targetEndMs + maximumOffsetMs
+
+        return correctedTargetStartMs >= referenceStartMs - REFERENCE_EDGE_TOLERANCE_MS &&
+            correctedTargetEndMs <= referenceEndMs + REFERENCE_EDGE_TOLERANCE_MS
+    }
+
+    private fun referenceIsSubstantiallyShorter(
+        reference: List<SrtCue>,
+        target: List<SrtCue>
+    ): Boolean {
+        if (reference.isEmpty() || target.isEmpty()) return false
+
+        val targetSpanMs = target.maxOf(SrtCue::endMs) - target.minOf(SrtCue::startMs)
+        if (targetSpanMs <= 0L) return false
+        val referenceSpanMs = reference.maxOf(SrtCue::endMs) - reference.minOf(SrtCue::startMs)
+        return referenceSpanMs.toDouble() / targetSpanMs < MIN_PARTIAL_REFERENCE_SPAN_RATIO
     }
 }
 

@@ -1,6 +1,7 @@
 package com.nuvio.tv.ui.screens.player
 
 import android.util.Log
+import androidx.media3.common.MimeTypes
 import com.nuvio.tv.R
 import com.nuvio.tv.data.repository.SubtitleSyncFailureReportInput
 import com.nuvio.tv.data.repository.SubtitleSyncReferenceInput
@@ -138,6 +139,8 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
     automaticSubtitleSyncJob?.cancel()
     activeSubtitleReferenceScanner?.close()
     val streamUrlAtStart = currentStreamUrl
+    val streamHeadersAtStart = currentHeaders.toMap()
+    val contentIdentityAtStart = currentSubtitleContentIdentity()
     val playerAtStart = _exoPlayer
     automaticSubtitleSyncJob = scope.launch {
         val syncJob = coroutineContext[Job]
@@ -157,8 +160,8 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
             }
             val scanner = SubtitleReferenceScanner(
                 context = context,
-                url = currentStreamUrl,
-                headers = currentHeaders,
+                url = streamUrlAtStart,
+                headers = streamHeadersAtStart,
                 store = subtitleReferenceCueStore
             )
             activeSubtitleReferenceScanner = scanner
@@ -181,7 +184,21 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
             }
             failureStage = "downloading addon subtitle"
             val targetDocument = withContext(subtitleSyncDispatcher) {
-                SrtDocument.parse(downloadSubtitleBody(selectedSubtitle.url))
+                val rawSubtitleBody = downloadSubtitleBody(
+                    url = selectedSubtitle.url,
+                    languageHint = selectedSubtitle.lang,
+                    headers = selectedSubtitle.headers,
+                    streamUrl = streamUrlAtStart,
+                    streamHeaders = streamHeadersAtStart
+                )
+                val subtitleMime = PlayerSubtitleUtils.sniffSubtitleMimeType(
+                    rawText = rawSubtitleBody,
+                    sourceUrl = selectedSubtitle.url
+                )
+                if (subtitleMime !in setOf(MimeTypes.APPLICATION_SUBRIP, MimeTypes.TEXT_VTT)) {
+                    error(context.getString(R.string.subtitle_automatic_sync_srt_only))
+                }
+                parseAutomaticSubtitleDocument(rawSubtitleBody, selectedSubtitle.url)
             }
             targetDocumentForReport = targetDocument
             if (targetDocument.cues.size < 12) {
@@ -199,7 +216,8 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                 )?.first
             } ?: error(context.getString(R.string.subtitle_automatic_sync_low_confidence))
 
-            if (currentStreamUrl != streamUrlAtStart || _exoPlayer !== playerAtStart ||
+            if (currentStreamUrl != streamUrlAtStart || currentSubtitleContentIdentity() != contentIdentityAtStart ||
+                _exoPlayer !== playerAtStart ||
                 _uiState.value.selectedAddonSubtitle?.autoSyncTrackKey() != selectedSubtitle.autoSyncTrackKey()) {
                 return@launch
             }
@@ -209,14 +227,20 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                 error(context.getString(R.string.subtitle_automatic_sync_low_confidence))
             }
             val localUri = withContext(Dispatchers.IO) { subtitleSyncFileStore.write(rewritten) }
-            if (currentStreamUrl != streamUrlAtStart || _exoPlayer !== playerAtStart ||
+            if (currentStreamUrl != streamUrlAtStart || currentSubtitleContentIdentity() != contentIdentityAtStart ||
+                _exoPlayer !== playerAtStart ||
                 _uiState.value.selectedAddonSubtitle?.autoSyncTrackKey() != selectedSubtitle.autoSyncTrackKey()) {
                 return@launch
             }
-            synchronizedSubtitleOverride = SynchronizedSubtitleOverride(
+            val synchronizedOverride = SynchronizedSubtitleOverride(
                 subtitleKey = addonSubtitleKey(selectedSubtitle),
-                uri = localUri
+                streamUrl = streamUrlAtStart,
+                contentIdentity = contentIdentityAtStart,
+                uri = localUri,
+                document = rewritten
             )
+            synchronizedSubtitleOverride = synchronizedOverride
+            replaceSubtitleAutoSyncCache(selectedSubtitle, synchronizedOverride)
             subtitleDelayUs.set(0L)
             _uiState.update { it.copy(subtitleDelayMs = 0) }
             persistTrackPreference()
@@ -234,7 +258,8 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (currentStreamUrl != streamUrlAtStart || _exoPlayer !== playerAtStart ||
+            if (currentStreamUrl != streamUrlAtStart || currentSubtitleContentIdentity() != contentIdentityAtStart ||
+                _exoPlayer !== playerAtStart ||
                 _uiState.value.selectedAddonSubtitle?.autoSyncTrackKey() != selectedSubtitle.autoSyncTrackKey()
             ) {
                 return@launch
@@ -348,6 +373,8 @@ internal fun PlayerRuntimeController.resetSubtitleAutoSyncState(clearLoadedTrack
 private fun PlayerRuntimeController.maybeLoadSubtitleAutoSyncCues(force: Boolean) {
     val selectedSubtitle = _uiState.value.selectedAddonSubtitle
     if (selectedSubtitle == null) {
+        subtitleAutoSyncLoadJob?.cancel()
+        subtitleAutoSyncLoadJob = null
         _uiState.update {
             it.copy(
                 subtitleAutoSyncCues = emptyList(),
@@ -360,7 +387,11 @@ private fun PlayerRuntimeController.maybeLoadSubtitleAutoSyncCues(force: Boolean
         return
     }
 
-    val selectedTrackKey = selectedSubtitle.autoSyncTrackKey()
+    val synchronizedOverride = synchronizedSubtitleOverrideFor(selectedSubtitle)
+    val selectedTrackKey = SubtitleSyncPlaybackSource.cacheKey(
+        trackKey = selectedSubtitle.autoSyncTrackKey(),
+        synchronizedSourceUri = synchronizedOverride?.uri?.toString()
+    )
     val state = _uiState.value
     if (!force &&
         state.subtitleAutoSyncLoadedTrackKey == selectedTrackKey &&
@@ -383,18 +414,21 @@ private fun PlayerRuntimeController.maybeLoadSubtitleAutoSyncCues(force: Boolean
         }
 
         try {
-            val rawSubtitleBody = downloadSubtitleBody(
-                selectedSubtitle.url,
-                selectedSubtitle.lang,
-                selectedSubtitle.headers
-            )
-            val parsedCues = PlayerSubtitleCueParser.parseFromText(
-                rawText = rawSubtitleBody,
-                sourceUrl = selectedSubtitle.url
-            )
-                .filter { cue -> cue.text.isNotBlank() }
+            val parsedCues = synchronizedOverride?.let {
+                SubtitleSyncPlaybackSource.toUiCues(it.document)
+            } ?: run {
+                val rawSubtitleBody = downloadSubtitleBody(
+                    selectedSubtitle.url,
+                    selectedSubtitle.lang,
+                    selectedSubtitle.headers
+                )
+                PlayerSubtitleCueParser.parseFromText(
+                    rawText = rawSubtitleBody,
+                    sourceUrl = selectedSubtitle.url
+                ).filter { cue -> cue.text.isNotBlank() }
+            }
 
-            if (_uiState.value.selectedAddonSubtitle?.autoSyncTrackKey() != selectedTrackKey) {
+            if (!isCurrentSubtitleAutoSyncSource(selectedTrackKey)) {
                 return@launch
             }
 
@@ -413,7 +447,7 @@ private fun PlayerRuntimeController.maybeLoadSubtitleAutoSyncCues(force: Boolean
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            if (_uiState.value.selectedAddonSubtitle?.autoSyncTrackKey() != selectedTrackKey) {
+            if (!isCurrentSubtitleAutoSyncSource(selectedTrackKey)) {
                 return@launch
             }
             _uiState.update {
@@ -428,6 +462,44 @@ private fun PlayerRuntimeController.maybeLoadSubtitleAutoSyncCues(force: Boolean
     }
 }
 
+private fun PlayerRuntimeController.subtitleAutoSyncSourceKey(
+    subtitle: Subtitle
+): String {
+    val synchronizedOverride = synchronizedSubtitleOverrideFor(subtitle)
+    return SubtitleSyncPlaybackSource.cacheKey(
+        trackKey = subtitle.autoSyncTrackKey(),
+        synchronizedSourceUri = synchronizedOverride?.uri?.toString()
+    )
+}
+
+private fun PlayerRuntimeController.isCurrentSubtitleAutoSyncSource(
+    sourceKey: String
+): Boolean {
+    val selectedSubtitle = _uiState.value.selectedAddonSubtitle ?: return false
+    return subtitleAutoSyncSourceKey(selectedSubtitle) == sourceKey
+}
+
+private fun PlayerRuntimeController.replaceSubtitleAutoSyncCache(
+    subtitle: Subtitle,
+    synchronizedOverride: SynchronizedSubtitleOverride
+) {
+    subtitleAutoSyncLoadJob?.cancel()
+    subtitleAutoSyncLoadJob = null
+    _uiState.update {
+        it.copy(
+            subtitleAutoSyncCues = SubtitleSyncPlaybackSource.toUiCues(synchronizedOverride.document),
+            subtitleAutoSyncCapturedVideoMs = null,
+            subtitleAutoSyncStatus = null,
+            subtitleAutoSyncError = null,
+            subtitleAutoSyncLoading = false,
+            subtitleAutoSyncLoadedTrackKey = SubtitleSyncPlaybackSource.cacheKey(
+                trackKey = subtitle.autoSyncTrackKey(),
+                synchronizedSourceUri = synchronizedOverride.uri.toString()
+            )
+        )
+    }
+}
+
 /**
  * Downloads a remote subtitle body for sidecar rendering / auto-sync.
  *
@@ -438,13 +510,23 @@ private fun PlayerRuntimeController.maybeLoadSubtitleAutoSyncCues(force: Boolean
 internal suspend fun PlayerRuntimeController.downloadSubtitleBody(
     url: String,
     languageHint: String? = null,
-    headers: Map<String, String>? = null
+    headers: Map<String, String>? = null,
+    streamUrl: String? = null,
+    streamHeaders: Map<String, String>? = null
 ): String =
     withContext(Dispatchers.IO) {
+        val requestStreamUrl = streamUrl ?: currentStreamUrl
+        val requestStreamHeaders = streamHeaders ?: currentHeaders.toMap()
         var lastError: Exception? = null
         repeat(SUBTITLE_DOWNLOAD_MAX_ATTEMPTS) { attempt ->
             try {
-                return@withContext executeSubtitleDownload(url, languageHint, headers)
+                return@withContext executeSubtitleDownload(
+                    url = url,
+                    languageHint = languageHint,
+                    customHeaders = headers,
+                    streamUrl = requestStreamUrl,
+                    streamHeaders = requestStreamHeaders
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -457,27 +539,24 @@ internal suspend fun PlayerRuntimeController.downloadSubtitleBody(
         throw lastError ?: IllegalStateException("Subtitle download failed")
     }
 
-private fun isSameOrSubdomain(host1: String?, host2: String?): Boolean {
-    if (host1.isNullOrBlank() || host2.isNullOrBlank()) return false
-    if (host1.equals(host2, ignoreCase = true)) return true
-    val parts1 = host1.lowercase().split('.')
-    val parts2 = host2.lowercase().split('.')
-    if (parts1.size >= 2 && parts2.size >= 2) {
-        val root1 = parts1.takeLast(2).joinToString(".")
-        val root2 = parts2.takeLast(2).joinToString(".")
-        if (root1 == root2) return true
-    }
-    return false
+internal fun isSameOrSubdomain(host: String?, parentHost: String?): Boolean {
+    val child = host?.trim()?.trimEnd('.')?.lowercase()?.takeIf { it.isNotBlank() }
+        ?: return false
+    val parent = parentHost?.trim()?.trimEnd('.')?.lowercase()?.takeIf { it.isNotBlank() }
+        ?: return false
+    return child == parent || child.endsWith(".$parent")
 }
 
 private fun PlayerRuntimeController.executeSubtitleDownload(
     url: String,
     languageHint: String? = null,
-    customHeaders: Map<String, String>? = null
+    customHeaders: Map<String, String>? = null,
+    streamUrl: String,
+    streamHeaders: Map<String, String>
 ): String {
     val requestBuilder = Request.Builder().url(url)
     val subtitleHost = runCatching { android.net.Uri.parse(url).host }.getOrNull()
-    val streamHost = runCatching { android.net.Uri.parse(currentStreamUrl).host }.getOrNull()
+    val streamHost = runCatching { android.net.Uri.parse(streamUrl).host }.getOrNull()
     val sameDomain = isSameOrSubdomain(subtitleHost, streamHost)
 
     val explicitHeaders = customHeaders
@@ -489,7 +568,7 @@ private fun PlayerRuntimeController.executeSubtitleDownload(
 
     if (sameDomain) {
         // Same domain/subdomain: forward all safe stream headers (including cookies/auth)
-        currentHeaders
+        streamHeaders
             .filterKeys { it.lowercase() !in excludedHopByHop }
             .forEach { (key, value) ->
                 requestBuilder.header(key, value)
@@ -498,7 +577,7 @@ private fun PlayerRuntimeController.executeSubtitleDownload(
         // Cross-domain: forward Referer, Origin, and safe metadata headers to prevent CDN 403 Forbidden,
         // but omit Authorization and Cookie to avoid foreign auth rejection (e.g. OpenSubtitles).
         val crossDomainExcluded = excludedHopByHop + setOf("authorization", "cookie", "proxy-authorization")
-        currentHeaders
+        streamHeaders
             .filterKeys { it.lowercase() !in crossDomainExcluded }
             .forEach { (key, value) ->
                 requestBuilder.header(key, value)
@@ -513,7 +592,7 @@ private fun PlayerRuntimeController.executeSubtitleDownload(
     }
 
     // User-Agent: prefer stream User-Agent if available, otherwise standard browser UA
-    val streamUa = currentHeaders.entries.firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }?.value
+    val streamUa = streamHeaders.entries.firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }?.value
     val defaultUa = streamUa ?: (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -541,6 +620,20 @@ private fun PlayerRuntimeController.executeSubtitleDownload(
         }
         return body
     }
+}
+
+internal fun parseAutomaticSubtitleDocument(rawText: String, sourceUrl: String): SrtDocument {
+    return SrtDocument(
+        PlayerSubtitleCueParser.parseFromText(rawText, sourceUrl)
+            .filter { it.text.isNotBlank() && it.endTimeMs > it.startTimeMs }
+            .map { cue ->
+                SrtCue(
+                    startMs = cue.startTimeMs,
+                    endMs = cue.endTimeMs,
+                    text = cue.text
+                )
+            }
+    )
 }
 
 private fun Subtitle.autoSyncTrackKey(): String = "$id|$url"

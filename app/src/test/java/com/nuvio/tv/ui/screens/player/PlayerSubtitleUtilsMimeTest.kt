@@ -2,6 +2,7 @@ package com.nuvio.tv.ui.screens.player
 
 import androidx.media3.common.MimeTypes
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -65,6 +66,13 @@ class PlayerSubtitleUtilsMimeTest {
         assertEquals(MimeTypes.TEXT_VTT, candidates.first())
         assertTrue(candidates.contains(MimeTypes.APPLICATION_SUBRIP))
         assertEquals(candidates.size, candidates.distinct().size)
+    }
+
+    @Test
+    fun sameOrSubdomain_doesNotTreatSharedPublicSuffixAsSameDomain() {
+        assertTrue(isSameOrSubdomain("cdn.video.example", "video.example"))
+        assertTrue(isSameOrSubdomain("video.example", "video.example"))
+        assertFalse(isSameOrSubdomain("video.example.co.uk", "subtitle.other.co.uk"))
     }
 
     @Test

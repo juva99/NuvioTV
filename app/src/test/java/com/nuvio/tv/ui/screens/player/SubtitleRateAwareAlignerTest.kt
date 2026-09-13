@@ -29,6 +29,9 @@ class SubtitleRateAwareAlignerTest {
 
     private val reference by lazy { fixture("real-eng-reference.srt") }
     private val target by lazy { fixture("real-heb-target.srt") }
+    private val partialReference by lazy {
+        SrtDocument(reference.cues.filter { it.startMs < 15 * 60_000L })
+    }
 
     private val palRatio = 23.976 / 25.0
     private val inversePalRatio = 25.0 / 23.976
@@ -73,6 +76,27 @@ class SubtitleRateAwareAlignerTest {
     @Test
     fun `recovers 23976 to 24 fps pulldown drift`() {
         assertRecovers(inverseNtscPulldownRatio, label = "23.976 -> 24 pulldown")
+    }
+
+    /**
+     * A passive reference captured for only the first fifteen minutes must not let a slightly
+     * better direct offset-only fit suppress the fixed-rate correction. Quality is intentionally
+     * scored over the complete target, not just the captured portion.
+     */
+    @Test
+    fun `recovers 24 to 23976 pulldown from a partial reference across the full target`() {
+        assertPartialRecovers(
+            driftRatio = inverseNtscPulldownRatio,
+            label = "partial 24 -> 23.976 pulldown"
+        )
+    }
+
+    @Test
+    fun `recovers 23976 to 24 pulldown from a partial reference across the full target`() {
+        assertPartialRecovers(
+            driftRatio = ntscPulldownRatio,
+            label = "partial 23.976 -> 24 pulldown"
+        )
     }
 
     // ---------------------------------------------------------------- safety
@@ -155,6 +179,24 @@ class SubtitleRateAwareAlignerTest {
         assertNull(SubtitleRateAwareAligner.align(unrelated, target.cues))
     }
 
+    @Test
+    fun `does not rescale non standard drift from a partial reference`() {
+        nonStandardDriftRatios.forEach { ratio ->
+            val drifted = target.driftedBy(ratio)
+            val plan = SubtitleRateAwareAligner.align(partialReference.cues, drifted.cues)
+
+            if (plan != null) {
+                assertEquals(
+                    "partial reference rescaled non standard ${"%.4f".format(ratio)} drift by " +
+                        "${plan.rateRatio} (conf=${plan.confidence})",
+                    1.0,
+                    plan.rateRatio,
+                    0.0
+                )
+            }
+        }
+    }
+
     /**
      * Guards the threshold from either side: every correct recovery must clear it comfortably and
      * every wrong candidate must fall short of it, rather than the two merely happening to land on
@@ -188,6 +230,43 @@ class SubtitleRateAwareAlignerTest {
         val quality = quality(plan.rewrite(target))
         assertTrue("rescaling damaged a correct track: $quality", quality.misplacedOverOneSecond == 0)
         assertTrue("rescaling damaged a correct track: $quality", quality.medianErrorMs <= 100L)
+    }
+
+    @Test
+    fun `leaves an already correct track unscaled with a partial reference`() {
+        val plan = requireNotNull(
+            SubtitleRateAwareAligner.align(partialReference.cues, target.cues)
+        )
+
+        assertEquals("a partial no-drift track was rescaled", 1.0, plan.rateRatio, 0.0)
+        val quality = quality(plan.rewrite(target))
+        assertTrue(
+            "partial no-drift alignment damaged the target: $quality",
+            quality.misplacedOverOneSecond == 0
+        )
+        assertTrue(
+            "partial no-drift alignment damaged the target: $quality",
+            quality.medianErrorMs <= 100L
+        )
+    }
+
+    @Test
+    fun `keeps a constant offset unscaled with a partial reference`() {
+        val shifted = target.shiftedBy(-9_100L)
+        val plan = requireNotNull(
+            SubtitleRateAwareAligner.align(partialReference.cues, shifted.cues)
+        )
+
+        assertEquals("a partial constant offset was rescaled", 1.0, plan.rateRatio, 0.0)
+        val quality = quality(plan.rewrite(shifted))
+        assertTrue(
+            "partial constant-offset alignment damaged the target: $quality",
+            quality.misplacedOverOneSecond == 0
+        )
+        assertTrue(
+            "partial constant-offset alignment damaged the target: $quality",
+            quality.medianErrorMs <= 100L
+        )
     }
 
     /**
@@ -327,6 +406,30 @@ class SubtitleRateAwareAlignerTest {
             "segments=${plan.model.segments.size} $quality")
         assertTrue("$label left cues displaced: $quality", quality.misplacedOverOneSecond == 0)
         assertTrue("$label median error too high: $quality", quality.medianErrorMs <= 100L)
+    }
+
+    private fun assertPartialRecovers(driftRatio: Double, label: String) {
+        val drifted = target.driftedBy(driftRatio)
+        val plan = requireNotNull(
+            SubtitleRateAwareAligner.align(partialReference.cues, drifted.cues)
+        ) {
+            "$label was refused outright"
+        }
+
+        assertEquals("$label picked the wrong ratio", driftRatio, plan.rateRatio, 1e-9)
+        val quality = quality(plan.rewrite(drifted))
+        println(
+            "[rate-sync] $label -> ratio=${plan.rateRatio} " +
+                "conf=${"%.4f".format(plan.confidence)} segments=${plan.model.segments.size} $quality"
+        )
+        assertTrue(
+            "$label left cues displaced across the full target: $quality",
+            quality.misplacedOverOneSecond == 0
+        )
+        assertTrue(
+            "$label median error too high across the full target: $quality",
+            quality.medianErrorMs <= 100L
+        )
     }
 
     /** Best confidence any ratio can reach on [drifted], guard ignored. */

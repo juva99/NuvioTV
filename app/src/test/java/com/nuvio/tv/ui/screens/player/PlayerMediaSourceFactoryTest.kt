@@ -1,15 +1,67 @@
 package com.nuvio.tv.ui.screens.player
 
+import android.content.ContentResolver
+import android.content.Context
+import android.net.Uri
 import androidx.media3.common.C
 import androidx.media3.common.MimeTypes
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
+import io.mockk.every
+import io.mockk.mockk
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
 import java.util.Base64
 
 class PlayerMediaSourceFactoryTest {
+
+    @Test
+    fun `scheme-aware progressive factory routes local subtitle resources locally and network media upstream`() {
+        val context = mockk<Context>(relaxed = true)
+        every { context.applicationContext } returns context
+        every { context.contentResolver } returns mockk<ContentResolver>(relaxed = true)
+        val upstream = RecordingDataSourceFactory()
+        val routedFactory = PlayerMediaSourceFactory.createSchemeAwareProgressiveDataSourceFactory(
+            context = context,
+            progressiveFactory = upstream
+        )
+
+        val contentUri = mockk<Uri>(relaxed = true) {
+            every { scheme } returns "content"
+        }
+        val localDataSource = routedFactory.createDataSource()
+        assertThrows(IOException::class.java) {
+            localDataSource.open(
+                DataSpec.Builder()
+                    .setUri(contentUri)
+                    .build()
+            )
+        }
+        localDataSource.close()
+        assertEquals(0, upstream.openCount)
+
+        val networkUri = mockk<Uri>(relaxed = true) {
+            every { scheme } returns "https"
+        }
+        val networkDataSource = routedFactory.createDataSource()
+        assertEquals(
+            RecordingDataSourceFactory.OPEN_LENGTH,
+            networkDataSource.open(
+                DataSpec.Builder()
+                    .setUri(networkUri)
+                    .build()
+            )
+        )
+        networkDataSource.close()
+
+        assertEquals(1, upstream.openCount)
+        assertEquals(networkUri, upstream.lastOpenedUri)
+    }
 
     @Test
     fun `media segment 404 with an alternative prefers another HLS track`() {
@@ -201,4 +253,31 @@ class PlayerMediaSourceFactoryTest {
 
     private fun String.basicAuthHeader(): String =
         "Basic " + Base64.getEncoder().encodeToString(toByteArray(Charsets.UTF_8))
+
+    private class RecordingDataSourceFactory : DataSource.Factory {
+        var openCount: Int = 0
+            private set
+        var lastOpenedUri: Uri? = null
+            private set
+
+        override fun createDataSource(): DataSource = object : DataSource {
+            override fun addTransferListener(transferListener: androidx.media3.datasource.TransferListener) = Unit
+
+            override fun open(dataSpec: DataSpec): Long {
+                openCount++
+                lastOpenedUri = dataSpec.uri
+                return OPEN_LENGTH
+            }
+
+            override fun read(buffer: ByteArray, offset: Int, length: Int): Int = -1
+
+            override fun getUri(): Uri? = lastOpenedUri
+
+            override fun close() = Unit
+        }
+
+        companion object {
+            const val OPEN_LENGTH = 17L
+        }
+    }
 }

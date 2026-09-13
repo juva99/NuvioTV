@@ -19,7 +19,6 @@ import androidx.media3.extractor.TrackOutput
 import androidx.media3.extractor.text.CueDecoder
 import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 
 internal data class SubtitleReferenceTrack(
@@ -52,37 +51,50 @@ internal class SubtitleReferenceCueStore(
         val cues: MutableMap<Long, SrtCue> = sortedMapOf()
     )
 
-    private val tracks = ConcurrentHashMap<String, TrackState>()
+    private val lock = Any()
+    private val tracks = mutableMapOf<String, TrackState>()
     private val publishedStatus = AtomicReference(SubtitleReferenceCaptureStatus(0, 0))
-    @Volatile private var largestTrackCueCount = 0
+    private var largestTrackCueCount = 0
+    private var generation = 0L
 
     fun clear() {
-        tracks.clear()
-        largestTrackCueCount = 0
+        synchronized(lock) {
+            generation++
+            tracks.clear()
+            largestTrackCueCount = 0
+        }
         publish()
     }
 
-    fun register(format: Format): String? {
+    fun currentGeneration(): Long = synchronized(lock) { generation }
+
+    fun register(format: Format, captureGeneration: Long = currentGeneration()): String? {
         if (!format.isEligibleEnglishSubtitleReference()) return null
         val sourceMimeType = format.subtitleSourceMimeType() ?: return null
         val key = listOfNotNull(format.id, format.language, format.label).joinToString("|")
             .ifBlank { "english-subtitle" }
-        val isNew = tracks.putIfAbsent(
-            key,
-            TrackState(
-                key = key,
-                name = format.label ?: format.language ?: "English subtitle",
-                language = format.language,
-                sourceMimeType = sourceMimeType
-            )
-        ) == null
+        val isNew = synchronized(lock) {
+            if (captureGeneration != generation) return@synchronized false
+            if (tracks.containsKey(key)) {
+                false
+            } else {
+                tracks[key] = TrackState(
+                    key = key,
+                    name = format.label ?: format.language ?: "English subtitle",
+                    language = format.language,
+                    sourceMimeType = sourceMimeType
+                )
+                true
+            }
+        }
         if (isNew) publish()
-        return key
+        return synchronized(lock) { key.takeIf { captureGeneration == generation && tracks.containsKey(it) } }
     }
 
-    fun addCue(trackKey: String, cue: SrtCue) {
-        val track = tracks[trackKey] ?: return
-        synchronized(track) {
+    fun addCue(trackKey: String, cue: SrtCue, captureGeneration: Long = currentGeneration()) {
+        synchronized(lock) {
+            if (captureGeneration != generation) return
+            val track = tracks[trackKey] ?: return
             if (track.cues.size >= MAX_CUES_PER_TRACK) return
             track.cues[cue.startMs] = cue
             if (track.cues.size > largestTrackCueCount) largestTrackCueCount = track.cues.size
@@ -95,10 +107,15 @@ internal class SubtitleReferenceCueStore(
      * publishing a status per cue meant thousands of [PlayerUiState] copies in a tight loop while
      * video was decoding.
      */
-    fun addCues(trackKey: String, cues: Collection<SrtCue>) {
+    fun addCues(
+        trackKey: String,
+        cues: Collection<SrtCue>,
+        captureGeneration: Long = currentGeneration()
+    ) {
         if (cues.isEmpty()) return
-        val track = tracks[trackKey] ?: return
-        synchronized(track) {
+        synchronized(lock) {
+            if (captureGeneration != generation) return
+            val track = tracks[trackKey] ?: return
             for (cue in cues) {
                 if (track.cues.size >= MAX_CUES_PER_TRACK) break
                 track.cues[cue.startMs] = cue
@@ -108,9 +125,9 @@ internal class SubtitleReferenceCueStore(
         publish()
     }
 
-    fun snapshot(): List<SubtitleReferenceTrack> = tracks.values
-        .map { track ->
-            synchronized(track) {
+    fun snapshot(): List<SubtitleReferenceTrack> = synchronized(lock) {
+        tracks.values
+            .map { track ->
                 SubtitleReferenceTrack(
                     track.key,
                     track.name,
@@ -119,8 +136,8 @@ internal class SubtitleReferenceCueStore(
                     track.cues.values.toList()
                 )
             }
-        }
-        .sortedByDescending { it.cues.size }
+            .sortedByDescending { it.cues.size }
+    }
 
     /**
      * The captured count is reported capped at [SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES]
@@ -130,18 +147,16 @@ internal class SubtitleReferenceCueStore(
      * playback instead of once per subtitle cue.
      */
     private fun publish() {
-        val status = SubtitleReferenceCaptureStatus(
-            eligibleTrackCount = tracks.size,
-            capturedCueCount = largestTrackCueCount
-                .coerceAtMost(SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES)
-        )
-        while (true) {
-            val previous = publishedStatus.get()
-            if (previous == status) return
-            if (publishedStatus.compareAndSet(previous, status)) {
-                onStatusChanged?.invoke(status)
-                return
-            }
+        val statusChanged = synchronized(lock) {
+            val status = SubtitleReferenceCaptureStatus(
+                eligibleTrackCount = tracks.size,
+                capturedCueCount = largestTrackCueCount
+                    .coerceAtMost(SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES)
+            )
+            if (publishedStatus.getAndSet(status) != status) status else null
+        }
+        statusChanged?.let { status ->
+            onStatusChanged?.invoke(status)
         }
     }
 
@@ -187,6 +202,8 @@ internal class SubtitleReferenceCaptureExtractorsFactory(
     private val delegate: ExtractorsFactory,
     private val store: SubtitleReferenceCueStore
 ) : ExtractorsFactory {
+    private val captureGeneration = store.currentGeneration()
+
     override fun createExtractors(): Array<Extractor> = delegate.createExtractors().map(::wrap).toTypedArray()
 
     override fun createExtractors(uri: Uri, responseHeaders: Map<String, List<String>>): Array<Extractor> =
@@ -194,7 +211,7 @@ internal class SubtitleReferenceCaptureExtractorsFactory(
 
     private fun wrap(extractor: Extractor): Extractor = object : ForwardingExtractor(extractor) {
         override fun init(output: ExtractorOutput) {
-            super.init(CapturingExtractorOutput(output, store))
+            super.init(CapturingExtractorOutput(output, store, captureGeneration))
         }
 
         override fun read(input: ExtractorInput, seekPosition: PositionHolder): Int =
@@ -205,11 +222,16 @@ internal class SubtitleReferenceCaptureExtractorsFactory(
 @UnstableApi
 private class CapturingExtractorOutput(
     private val delegate: ExtractorOutput,
-    private val store: SubtitleReferenceCueStore
+    private val store: SubtitleReferenceCueStore,
+    private val captureGeneration: Long
 ) : ExtractorOutput {
     override fun track(id: Int, type: Int): TrackOutput {
         val output = delegate.track(id, type)
-        return if (type == C.TRACK_TYPE_TEXT) CapturingSubtitleTrackOutput(output, store) else output
+        return if (type == C.TRACK_TYPE_TEXT) {
+            CapturingSubtitleTrackOutput(output, store, captureGeneration)
+        } else {
+            output
+        }
     }
 
     override fun endTracks() = delegate.endTracks()
@@ -219,7 +241,8 @@ private class CapturingExtractorOutput(
 @UnstableApi
 private class CapturingSubtitleTrackOutput(
     delegate: TrackOutput,
-    private val store: SubtitleReferenceCueStore
+    private val store: SubtitleReferenceCueStore,
+    private val captureGeneration: Long
 ) : ForwardingTrackOutput(delegate) {
     private val cueDecoder = CueDecoder()
     private val pendingData = ExposedByteArrayOutputStream()
@@ -241,7 +264,7 @@ private class CapturingSubtitleTrackOutput(
 
     override fun format(format: Format) {
         pendingData.reset()
-        trackKey = store.register(format)
+        trackKey = store.register(format, captureGeneration)
         sampleMimeType = format.sampleMimeType
         sourceMimeType = format.subtitleSourceMimeType()
         super.format(format)
@@ -318,7 +341,11 @@ private class CapturingSubtitleTrackOutput(
             captureRawSrtSample(key, timeUs, bytes, offset, size)
         } else if (isSubtitleDisplaySample(sourceMimeType, bytes, offset, size)) {
             val startMs = timeUs / 1000L
-            store.addCue(key, SrtCue(startMs, startMs + 1_000L, PLACEHOLDER_TEXT))
+            store.addCue(
+                key,
+                SrtCue(startMs, startMs + 1_000L, PLACEHOLDER_TEXT),
+                captureGeneration
+            )
         }
     }
 
@@ -342,7 +369,8 @@ private class CapturingSubtitleTrackOutput(
                         startMs = decoded.startTimeUs / 1000L,
                         endMs = (decoded.startTimeUs + decoded.durationUs) / 1000L,
                         text = PLACEHOLDER_TEXT
-                    )
+                    ),
+                    captureGeneration
                 )
             }
     }
@@ -366,7 +394,8 @@ private class CapturingSubtitleTrackOutput(
                     endMs = sampleStartMs + cue.endMs,
                     text = PLACEHOLDER_TEXT
                 )
-            }
+            },
+            captureGeneration
         )
     }
 
