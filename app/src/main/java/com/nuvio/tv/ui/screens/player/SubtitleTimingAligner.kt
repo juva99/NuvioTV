@@ -47,7 +47,8 @@ internal data class SubtitleSyncModel(
 /**
  * Aligns translated subtitles from timing alone. Symmetric onset matching is resilient to
  * translated tracks splitting the same dialogue differently, while overlapping cue-count windows
- * allow sustained offset changes caused by inserted scenes or ads.
+ * allow sustained offset changes caused by inserted scenes or ads. A short passive capture may
+ * produce a provisional one-segment constant-offset model, but never a piecewise model.
  */
 internal object SubtitleTimingAligner {
     private const val BIN_MS = 500L
@@ -104,6 +105,18 @@ internal object SubtitleTimingAligner {
     private const val MIN_EXCURSION_CONFIDENCE_DEFICIT = 0.03
     private const val MAX_WINDOW_CONSTANT_UNSUPPORTED_EDGE_CUES = 8
     /**
+     * A passive capture can be just one short dialogue scene. It is useful evidence for a
+     * provisional offset, but not enough evidence to infer edits or a frame-rate conversion.
+     */
+    private const val MAX_PROVISIONAL_REFERENCE_CUES = 32
+    private const val MAX_PROVISIONAL_REFERENCE_SPAN_MS = 2L * 60L * 1000L
+    private const val MIN_PROVISIONAL_CONSTANT_SCORE = 0.68
+    private const val MIN_PROVISIONAL_CONSTANT_MATCH_RATIO = 0.50
+    private const val MIN_PROVISIONAL_CONSTANT_MARGIN = 0.06
+    private const val MIN_PROVISIONAL_SUBSET_CUES = 6
+    private const val MIN_PROVISIONAL_SUBSET_SCORE = 0.60
+    private const val MIN_PROVISIONAL_SUBSET_MATCH_RATIO = 0.40
+    /**
      * Upper bound on the reference points used by the legacy full-span constant-offset score.
      *
      * Larger references are validated from persistent local-window consensus instead. Independently
@@ -116,6 +129,7 @@ internal object SubtitleTimingAligner {
         val referencePoints = timingPoints(reference)
         val targetPoints = timingPoints(target)
         if (referencePoints.size < MIN_TOTAL_CUES || targetPoints.size < MIN_TOTAL_CUES) return null
+        val provisionalEvidence = isProvisionalEvidencePoints(referencePoints, targetPoints)
 
         val candidates = globalOffsetCandidates(referencePoints, targetPoints)
         if (candidates.isEmpty()) return null
@@ -131,6 +145,29 @@ internal object SubtitleTimingAligner {
 
         val acceptedGroups = groups.filter { it.confidence >= 0.36 && it.matchedCueCount >= MIN_WINDOW_CUES }
         if (acceptedGroups.isEmpty()) return null
+        val totalMatched = acceptedGroups.sumOf(Group::matchedCueCount)
+        if (provisionalEvidence) {
+            val fit = provisionalConstantFit(
+                acceptedGroups,
+                referencePoints,
+                targetPoints,
+                candidates,
+                scratch
+            ) ?: return null
+            val targetEndMs = target.maxOf(SrtCue::endMs) + 1L
+            return SubtitleSyncModel(
+                segments = listOf(
+                    SubtitleSyncSegment(
+                        targetStartMs = 0L,
+                        targetEndMs = targetEndMs,
+                        offsetMs = fit.offsetMs,
+                        confidence = fit.score
+                    )
+                ),
+                confidence = fit.score,
+                matchedCueCount = totalMatched
+            )
+        }
         val windowConstantResult = if (removedExcursion ||
             referencePoints.size > MAX_PARTIAL_SCORE_POINTS
         ) {
@@ -160,7 +197,6 @@ internal object SubtitleTimingAligner {
             null
         }
         val allowPartialConstant = partialConstantFit != null
-        val totalMatched = acceptedGroups.sumOf(Group::matchedCueCount)
         if (totalMatched < MIN_TOTAL_CUES) return null
         val targetEndMs = target.maxOf(SrtCue::endMs) + 1L
 
@@ -218,6 +254,33 @@ internal object SubtitleTimingAligner {
             .sumOf { it.confidence * it.matchedCueCount } / totalMatched.coerceAtLeast(1)
         if (confidence < 0.4) return null
         return SubtitleSyncModel(segments, confidence.coerceIn(0.0, 1.0), totalMatched)
+    }
+
+    /**
+     * Returns true only for a short, dense passive capture. A sparse reference that spans the
+     * target remains on the established full-span path, while a longer partial capture still has
+     * to clear the stronger partial-reference gates below.
+     */
+    internal fun isProvisionalEvidence(
+        reference: List<SrtCue>,
+        target: List<SrtCue>
+    ): Boolean = isProvisionalEvidencePoints(timingPoints(reference), timingPoints(target))
+
+    private fun isProvisionalEvidencePoints(
+        reference: List<Long>,
+        target: List<Long>
+    ): Boolean {
+        if (reference.size < MIN_TOTAL_CUES ||
+            target.size < MIN_TOTAL_CUES ||
+            reference.size > MAX_PROVISIONAL_REFERENCE_CUES
+        ) {
+            return false
+        }
+        val referenceSpanMs = reference.last() - reference.first()
+        val targetSpanMs = target.last() - target.first()
+        return referenceSpanMs >= MIN_PARTIAL_CONSTANT_SPAN_MS &&
+            referenceSpanMs <= MAX_PROVISIONAL_REFERENCE_SPAN_MS &&
+            targetSpanMs > referenceSpanMs * 2L
     }
 
     private fun timingPoints(cues: List<SrtCue>): List<Long> = cues.map(SrtCue::startMs).distinct().sorted()
@@ -561,6 +624,87 @@ internal object SubtitleTimingAligner {
             offsetMs = offsetMs,
             score = selected.score.coerceIn(0.0, 1.0)
         )
+    }
+
+    /**
+     * Validates the only correction safe to make from a short passive capture: one constant offset
+     * over the whole target. In particular, this path never calls [buildSegments], so a low-cue
+     * scene cannot invent an edit boundary or extrapolate a rate.
+     */
+    private fun provisionalConstantFit(
+        groups: List<Group>,
+        reference: List<Long>,
+        target: List<Long>,
+        candidates: List<Long>,
+        scratch: Scratch
+    ): ConstantFit? {
+        if (groups.size != 1) return null
+        val group = groups.single()
+
+        val offsetMs = group.offsetMs
+        val selected = scoreOffset(reference, target, offsetMs, scratch)
+        val matchRatio = selected.matchCount.toDouble() / reference.size.coerceAtLeast(1)
+        if (selected.matchCount < MIN_TOTAL_CUES ||
+            matchRatio < MIN_PROVISIONAL_CONSTANT_MATCH_RATIO ||
+            selected.score < MIN_PROVISIONAL_CONSTANT_SCORE
+        ) return null
+
+        if (!provisionalSubsetsAgree(reference, target, offsetMs, scratch)) return null
+
+        val competingCutoff = selected.score - MIN_PROVISIONAL_CONSTANT_MARGIN
+        val hasCompetingOffset = candidates.any { candidate ->
+            abs(candidate - offsetMs) > MATCH_TOLERANCE_MS &&
+                scoreOffset(reference, target, candidate, scratch).score > competingCutoff
+        }
+        if (hasCompetingOffset) return null
+        return ConstantFit(
+            offsetMs = offsetMs,
+            score = selected.score.coerceIn(0.0, 1.0)
+        )
+    }
+
+    /**
+     * A single short window can look convincing when unrelated onset lists happen to share a
+     * rhythm. Require two temporally separated halves to select the same offset independently.
+     * The halves are scored against their own candidate histograms so agreement cannot be caused
+     * merely by reusing the winning full-reference candidate.
+     */
+    private fun provisionalSubsetsAgree(
+        reference: List<Long>,
+        target: List<Long>,
+        selectedOffsetMs: Long,
+        scratch: Scratch
+    ): Boolean {
+        if (reference.size < MIN_PROVISIONAL_SUBSET_CUES * 2) return false
+        val splitIndex = reference.size / 2
+        val subsets = listOf(
+            reference.subList(0, splitIndex),
+            reference.subList(splitIndex, reference.size)
+        )
+        val agreeingOffsets = subsets.mapNotNull { subset ->
+            val subsetCandidates = globalOffsetCandidates(subset, target)
+            val scored = subsetCandidates
+                .map { candidate ->
+                    candidate to scoreOffset(subset, target, candidate, scratch)
+                }
+                .sortedByDescending { (_, score) -> score.score }
+            val best = scored.firstOrNull() ?: return@mapNotNull null
+            if (abs(best.first - selectedOffsetMs) > OFFSET_MERGE_TOLERANCE_MS) {
+                return@mapNotNull null
+            }
+            val bestMatchRatio = best.second.matchCount.toDouble() / subset.size.coerceAtLeast(1)
+            if (best.second.matchCount < MIN_PROVISIONAL_SUBSET_CUES ||
+                bestMatchRatio < MIN_PROVISIONAL_SUBSET_MATCH_RATIO ||
+                best.second.score < MIN_PROVISIONAL_SUBSET_SCORE
+            ) {
+                null
+            } else {
+                best.first
+            }
+        }
+        return agreeingOffsets.size == 2 && agreeingOffsets.all {
+            abs(it - selectedOffsetMs) <= OFFSET_MERGE_TOLERANCE_MS
+        }
     }
 
     /**

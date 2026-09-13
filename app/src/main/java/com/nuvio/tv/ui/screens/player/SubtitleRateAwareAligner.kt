@@ -60,6 +60,11 @@ internal data class SubtitleSyncPlan(
  * Anything failing either guard falls back to the unscaled result -- usually null, so the user sees
  * the existing low-confidence message.
  *
+ * A very short passive reference is handled before the rate scan. If the offset-only aligner can
+ * validate a provisional constant fit, it is returned at [rateRatio] `1.0`; otherwise the
+ * alignment is declined. This deliberately gives low evidence no path to a frame-rate or
+ * piecewise correction.
+ *
  * A passive reference can cover only the beginning (or another portion) of the target timeline.
  * In that case a direct offset-only fit can still clear the confidence threshold while a fixed-rate
  * candidate is the better explanation of the complete track. Partial references therefore pay the
@@ -139,6 +144,11 @@ internal object SubtitleRateAwareAligner {
             referenceSpansTarget(reference, target, it)
         } == true
         val partialReference = referenceIsSubstantiallyShorter(reference, target)
+        if (SubtitleTimingAligner.isProvisionalEvidence(reference, target)) {
+            // A short passive capture can establish a useful provisional offset, but it cannot
+            // distinguish a genuine frame-rate conversion from a coincidental local fit.
+            return direct
+        }
         if (direct != null &&
             direct.confidence >= MIN_RESCALED_CONFIDENCE &&
             directSpansTarget &&

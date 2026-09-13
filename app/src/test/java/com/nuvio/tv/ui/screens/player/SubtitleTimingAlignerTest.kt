@@ -1,6 +1,7 @@
 package com.nuvio.tv.ui.screens.player
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -115,6 +116,18 @@ class SubtitleTimingAlignerTest {
     }
 
     @Test
+    fun `rejects empty and undersized provisional evidence safely`() {
+        val target = irregularTimeline(20)
+        val shortReference = target.take(11)
+
+        assertFalse(SubtitleTimingAligner.isProvisionalEvidence(emptyList(), target))
+        assertFalse(SubtitleTimingAligner.isProvisionalEvidence(shortReference, target))
+        assertFalse(SubtitleTimingAligner.isProvisionalEvidence(target, emptyList()))
+        assertNull(SubtitleTimingAligner.align(emptyList(), target))
+        assertNull(SubtitleTimingAligner.align(target, emptyList()))
+    }
+
+    @Test
     fun `accepts a strong constant offset from partial playback capture`() {
         val target = variableTimeline(220)
         val reference = target.drop(90).take(35).map { cue ->
@@ -125,6 +138,81 @@ class SubtitleTimingAlignerTest {
 
         assertEquals(1, model.segments.size)
         assertTrue(kotlin.math.abs(model.segments.single().offsetMs - 2_000L) <= 250L)
+    }
+
+    @Test
+    fun `accepts a split translated capture after separated subsets agree`() {
+        val target = irregularTimeline(513)
+        val captured = target.drop(178).take(14)
+        val offsetMs = 6_000L
+        val splitAfter = setOf(3, 5, 6, 7, 8, 9, 11, 12)
+        val reference = captured.flatMapIndexed { index, cue ->
+            buildList {
+                add(cue.copy(startMs = cue.startMs + offsetMs, endMs = cue.endMs + offsetMs))
+                if (index in splitAfter) {
+                    val next = captured[index + 1]
+                    val splitMs = (cue.startMs + next.startMs) / 2L + offsetMs
+                    add(SrtCue(splitMs, splitMs + 1_000L, "split"))
+                }
+            }
+        }.sortedBy(SrtCue::startMs)
+
+        val model = requireNotNull(SubtitleTimingAligner.align(reference, target))
+
+        assertEquals(1, model.segments.size)
+        assertTrue(kotlin.math.abs(model.segments.single().offsetMs - offsetMs) <= 500L)
+    }
+
+    @Test
+    fun `accepts a provisional capture when merged target cues are fewer than reference cues`() {
+        val localTarget = irregularTimeline(12)
+        val trailingTarget = List(8) { index ->
+            SrtCue(
+                localTarget.last().endMs + 150_000L + index * 5_000L,
+                localTarget.last().endMs + 151_000L + index * 5_000L,
+                "Target ${index + localTarget.size}"
+            )
+        }
+        val target = localTarget + trailingTarget
+        val offsetMs = 6_000L
+        val captured = target.take(12)
+        val reference = captured.flatMapIndexed { index, cue ->
+            buildList {
+                add(cue.copy(startMs = cue.startMs + offsetMs, endMs = cue.endMs + offsetMs))
+                if (index < captured.lastIndex) {
+                    val next = captured[index + 1]
+                    val splitMs = (cue.startMs + next.startMs) / 2L + offsetMs
+                    add(SrtCue(splitMs, splitMs + 500L, "split"))
+                }
+            }
+        }.sortedBy(SrtCue::startMs)
+
+        assertTrue("test must exercise merged target cues", target.size < reference.size)
+        assertTrue(SubtitleTimingAligner.isProvisionalEvidence(reference, target))
+        val model = requireNotNull(SubtitleTimingAligner.align(reference, target))
+
+        assertEquals(1, model.segments.size)
+        assertTrue(kotlin.math.abs(model.segments.single().offsetMs - offsetMs) <= 500L)
+    }
+
+    /**
+     * This independently generated 12-cue reference previously produced a +28,631ms fit with
+     * 0.955 confidence against the 513-cue target, even though it has no shared source timeline.
+     */
+    @Test
+    fun `rejects an independent short reference chance alignment`() {
+        val target = irregularTimeline(513, seed = 12_345L)
+        val starts = listOf(
+            451_707L, 455_813L, 458_991L, 462_336L, 466_125L, 468_417L,
+            473_097L, 476_847L, 480_246L, 482_530L, 484_971L, 487_820L
+        )
+        val reference = starts.mapIndexed { index, startMs ->
+            SrtCue(startMs, startMs + 1_000L, "Reference $index")
+        }
+
+        assertTrue(SubtitleTimingAligner.isProvisionalEvidence(reference, target))
+        assertNull(SubtitleTimingAligner.align(reference, target))
+        assertNull(SubtitleRateAwareAligner.align(reference, target))
     }
 
     @Test
@@ -139,6 +227,7 @@ class SubtitleTimingAlignerTest {
         }
 
         assertNull(SubtitleTimingAligner.align(reference, periodicTarget))
+        assertNull(SubtitleRateAwareAligner.align(reference, periodicTarget))
     }
 
     @Test
@@ -218,6 +307,15 @@ class SubtitleTimingAlignerTest {
         var cueStart = 0L
         return List(count) { index ->
             cueStart += if (index == 0) 0L else 1_500L + ((index * 7_919L) % 8_000L)
+            SrtCue(cueStart, cueStart + 1_200L, "Line $index")
+        }
+    }
+
+    private fun irregularTimeline(count: Int, seed: Long = 15L): List<SrtCue> {
+        val random = java.util.Random(seed)
+        var cueStart = 0L
+        return List(count) { index ->
+            if (index > 0) cueStart += 1_500L + random.nextInt(3_501)
             SrtCue(cueStart, cueStart + 1_200L, "Line $index")
         }
     }

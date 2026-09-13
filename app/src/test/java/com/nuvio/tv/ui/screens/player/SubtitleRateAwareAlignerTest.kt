@@ -269,6 +269,40 @@ class SubtitleRateAwareAlignerTest {
         )
     }
 
+    @Test
+    fun `keeps a provisional short-capture alignment at rate one`() {
+        val (reference, target) = provisionalScenario()
+
+        val plan = requireNotNull(SubtitleRateAwareAligner.align(reference, target))
+
+        assertEquals(1.0, plan.rateRatio, 0.0)
+        assertEquals(1, plan.model.segments.size)
+        assertTrue(abs(plan.model.segments.single().offsetMs - 6_000L) <= 500L)
+    }
+
+    @Test
+    fun `keeps a short passive capture at rate one`() {
+        val (reference, target) = provisionalScenario()
+
+        val plan = requireNotNull(SubtitleRateAwareAligner.align(reference, target))
+
+        assertEquals(1.0, plan.rateRatio, 0.0)
+        assertEquals(1, plan.model.segments.size)
+    }
+
+    @Test
+    fun `rejects frame rate drift from a short passive capture`() {
+        val (reference, target) = provisionalScenario()
+        val drifted = target.map { cue ->
+            cue.copy(
+                startMs = (cue.startMs / ntscPulldownRatio).roundToLong(),
+                endMs = (cue.endMs / ntscPulldownRatio).roundToLong()
+            )
+        }
+
+        assertNull(SubtitleRateAwareAligner.align(reference, drifted))
+    }
+
     /**
      * The unscaled path must stay identical to what [SubtitleTimingAligner] produces on its own, so
      * that wrapping changes nothing for the common case.
@@ -291,6 +325,25 @@ class SubtitleRateAwareAlignerTest {
         assertNull(
             SubtitleRateAwareAligner.align(fixture("unrelated-embedded.srt").cues, target.cues)
         )
+    }
+
+    /**
+     * Before separated-subset validation this timing-only fit was accepted at roughly 0.803
+     * confidence with 17/22 matches, despite the reference being unrelated to the target.
+     */
+    @Test
+    fun `rejects an unrelated short reference that only wins as a chance window`() {
+        val starts = listOf(
+            197_197L, 198_199L, 201_758L, 203_065L, 203_894L, 205_222L,
+            206_763L, 209_595L, 210_367L, 215_292L, 215_604L, 218_678L,
+            219_180L, 221_032L, 222_456L, 229_752L, 230_881L, 232_623L,
+            232_804L, 237_561L, 239_449L, 240_073L
+        )
+        val unrelated = starts.map { start -> SrtCue(start, start + 1_000L, "Unrelated") }
+
+        assertTrue(SubtitleTimingAligner.isProvisionalEvidence(unrelated, target.cues))
+        assertNull(SubtitleTimingAligner.align(unrelated, target.cues))
+        assertNull(SubtitleRateAwareAligner.align(unrelated, target.cues))
     }
 
     @Test
@@ -486,6 +539,29 @@ class SubtitleRateAwareAlignerTest {
     private fun SrtDocument.shiftedBy(deltaMs: Long): SrtDocument = SrtDocument(
         cues.map { it.copy(startMs = it.startMs + deltaMs, endMs = it.endMs + deltaMs) }
     )
+
+    private fun provisionalScenario(): Pair<List<SrtCue>, List<SrtCue>> {
+        val random = java.util.Random(15L)
+        var cueStart = 0L
+        val target = List(513) { index ->
+            if (index > 0) cueStart += 1_500L + random.nextInt(3_501)
+            SrtCue(cueStart, cueStart + 1_200L, "Target $index")
+        }
+        val captured = target.drop(178).take(14)
+        val offsetMs = 6_000L
+        val splitAfter = setOf(3, 5, 6, 7, 8, 9, 11, 12)
+        val reference = captured.flatMapIndexed { index, cue ->
+            buildList {
+                add(cue.copy(startMs = cue.startMs + offsetMs, endMs = cue.endMs + offsetMs))
+                if (index in splitAfter) {
+                    val next = captured[index + 1]
+                    val splitMs = (cue.startMs + next.startMs) / 2L + offsetMs
+                    add(SrtCue(splitMs, splitMs + 1_000L, "split"))
+                }
+            }
+        }.sortedBy(SrtCue::startMs)
+        return reference to target
+    }
 
     private fun fixture(name: String): SrtDocument =
         SrtDocument.parse(requireNotNull(javaClass.getResource("/subtitle-sync/$name")).readText())
