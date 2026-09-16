@@ -870,9 +870,9 @@ internal object SubtitleTimingAligner {
      * [dropUnsupportedGroups] handles one bad group at a time. Long translated tracks can produce
      * several adjacent bad windows that become multiple groups, so none is individually weaker
      * than both neighbours even though the whole run is a small excursion from a baseline covering
-     * the rest of the film. The whole run must also be meaningfully less confident than its
-     * brackets, so a short but well-supported A-B-A region created by two compensating edits remains
-     * eligible for piecewise alignment.
+     * the rest of the film. A run of mutually disagreeing single-window groups has no sustained
+     * timing state; it only needs to be weaker than its brackets. Coherent excursions still require
+     * a meaningful confidence deficit, preserving real A-B-A regions from compensating edits.
      */
     private fun dropUnsupportedExcursions(groups: List<Group>): List<Group> {
         val ordered = groups.sortedBy(Group::referenceStartMs)
@@ -925,10 +925,18 @@ internal object SubtitleTimingAligner {
             val bracketConfidence = bracketEvidence
                 .map(WindowMatch::confidence)
                 .average()
+            val fragmentedRun = runEnd - runStart > 1 &&
+                ordered.subList(runStart, runEnd).all { it.windows.size == 1 } &&
+                excursionEvidence.all { window ->
+                    excursionEvidence.count {
+                        abs(it.offsetMs - window.offsetMs) <= OFFSET_MERGE_TOLERANCE_MS
+                    } == 1
+                }
             if (isBracketed &&
                 excursionWindows * MINORITY_WINDOW_RATIO <= totalWindows &&
                 excursionWindows < bracketWindows &&
-                excursionConfidence + MIN_EXCURSION_CONFIDENCE_DEFICIT <= bracketConfidence
+                (excursionConfidence + MIN_EXCURSION_CONFIDENCE_DEFICIT <= bracketConfidence ||
+                    fragmentedRun && excursionConfidence < bracketConfidence)
             ) {
                 remove += runStart until runEnd
             }
