@@ -327,7 +327,7 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
             var plan: SubtitleSyncPlan? = null
             var lastAlignedReferenceSignature = ""
             var lastAlignmentProgressMs = SystemClock.elapsedRealtime()
-            var waitingForMoreEvidence = false
+            var alignmentAttemptCount = 0
             while (plan == null) {
                 referenceTracks = subtitleReferenceCueStore.snapshot()
                 val usableReferenceTracks = referenceTracks.filter {
@@ -337,6 +337,17 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                 if (referenceSignature != lastAlignedReferenceSignature) {
                     lastAlignedReferenceSignature = referenceSignature
                     lastAlignmentProgressMs = SystemClock.elapsedRealtime()
+                    alignmentAttemptCount++
+                    val capturedCueCount = referenceTracks.maxOfOrNull { it.cues.size } ?: 0
+                    _uiState.update {
+                        it.copy(
+                            automaticSubtitleSyncMessage = context.getString(
+                                R.string.subtitle_automatic_sync_matching_attempt,
+                                alignmentAttemptCount,
+                                capturedCueCount
+                            )
+                        )
+                    }
                     val remainingMs = (operationDeadlineMs - SystemClock.elapsedRealtime())
                         .coerceAtLeast(1L)
                     val candidate = withTimeoutOrNull(remainingMs) {
@@ -348,21 +359,19 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                         }
                     }
                     if (candidate != null) plan = candidate
-                }
-                if (plan != null) break
-                if (!waitingForMoreEvidence) {
-                    waitingForMoreEvidence = true
-                    val capturedCueCount = referenceTracks.maxOfOrNull { it.cues.size } ?: 0
-                    _uiState.update {
-                        it.copy(
-                            automaticSubtitleSyncMessage = context.getString(
-                                R.string.subtitle_automatic_sync_waiting_for_more_cues,
-                                capturedCueCount,
-                                SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
+                    if (candidate == null) {
+                        _uiState.update {
+                            it.copy(
+                                automaticSubtitleSyncMessage = context.getString(
+                                    R.string.subtitle_automatic_sync_retry_waiting,
+                                    alignmentAttemptCount,
+                                    capturedCueCount
+                                )
                             )
-                        )
+                        }
                     }
                 }
+                if (plan != null) break
 
                 val nowMs = SystemClock.elapsedRealtime()
                 if (nowMs >= operationDeadlineMs ||
