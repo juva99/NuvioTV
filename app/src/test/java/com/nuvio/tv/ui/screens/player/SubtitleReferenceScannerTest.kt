@@ -21,6 +21,7 @@ import io.mockk.unmockkConstructor
 import io.mockk.unmockkObject
 import io.mockk.unmockkStatic
 import kotlinx.coroutines.runBlocking
+import java.net.SocketTimeoutException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -68,9 +69,7 @@ class SubtitleReferenceScannerTest {
     }
 
     @Test
-    fun `invalid nonzero range responses become index unavailable`() = runBlocking {
-        val connection = mockk<java.net.HttpURLConnection>(relaxed = true)
-        every { connection.responseCode } returns 206
+    fun `initial full-body response without content range remains usable`() = runBlocking {
         val parsedUri = mockk<Uri>(relaxed = true)
 
         var currentFactory: SequencedDataSourceFactory? = null
@@ -78,15 +77,46 @@ class SubtitleReferenceScannerTest {
         every { Uri.parse(any()) } returns parsedUri
         mockkObject(PlayerPlaybackNetworking)
         every {
-            PlayerPlaybackNetworking.openConnection(
-                any(),
-                any(),
-                any(),
-                any(),
-                any(),
-                any()
+            PlayerPlaybackNetworking.createDataSourceFactory(any(), any())
+        } answers { requireNotNull(currentFactory) }
+
+        mockkConstructor(MatroskaExtractor::class)
+        every { anyConstructed<MatroskaExtractor>().sniff(any()) } returns true
+        every { anyConstructed<MatroskaExtractor>().init(any()) } just Runs
+        every { anyConstructed<MatroskaExtractor>().read(any(), any()) } returns Extractor.RESULT_END_OF_INPUT
+        every { anyConstructed<MatroskaExtractor>().release() } just Runs
+
+        try {
+            currentFactory = SequencedDataSourceFactory(
+                initialResponse = null,
+                nonzeroResponse = null,
+                openedLength = 100_000_000L
             )
-        } returns connection
+            val scanner = SubtitleReferenceScanner(
+                context = mockk<Context>(relaxed = true),
+                url = "https://example.test/video.mkv",
+                headers = emptyMap(),
+                store = SubtitleReferenceCueStore()
+            )
+
+            assertEquals(SubtitleReferenceScanResult.IndexUnavailable, scanner.scan())
+            assertEquals(listOf(0L), currentFactory!!.openedPositions)
+            scanner.close()
+        } finally {
+            unmockkConstructor(MatroskaExtractor::class)
+            unmockkObject(PlayerPlaybackNetworking)
+            unmockkStatic(Uri::class)
+        }
+    }
+
+    @Test
+    fun `invalid nonzero range responses become index unavailable`() = runBlocking {
+        val parsedUri = mockk<Uri>(relaxed = true)
+
+        var currentFactory: SequencedDataSourceFactory? = null
+        mockkStatic(Uri::class)
+        every { Uri.parse(any()) } returns parsedUri
+        mockkObject(PlayerPlaybackNetworking)
         every {
             PlayerPlaybackNetworking.createDataSourceFactory(any(), any())
         } answers { requireNotNull(currentFactory) }
@@ -131,9 +161,58 @@ class SubtitleReferenceScannerTest {
         }
     }
 
+    @Test
+    fun `network timeouts become recoverable scan failures`() = runBlocking {
+        val parsedUri = mockk<Uri>(relaxed = true)
+        val factory = object : DataSource.Factory {
+            override fun createDataSource(): DataSource = object : DataSource {
+                override fun addTransferListener(transferListener: TransferListener) = Unit
+
+                override fun open(dataSpec: DataSpec): Long {
+                    throw SocketTimeoutException("test timeout")
+                }
+
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+                    C.RESULT_END_OF_INPUT
+
+                override fun getUri(): Uri? = parsedUri
+
+                override fun getResponseHeaders(): Map<String, List<String>> = emptyMap()
+
+                override fun close() = Unit
+            }
+        }
+
+        mockkStatic(Uri::class)
+        every { Uri.parse(any()) } returns parsedUri
+        mockkObject(PlayerPlaybackNetworking)
+        every {
+            PlayerPlaybackNetworking.createDataSourceFactory(any(), any())
+        } returns factory
+
+        try {
+            val scanner = SubtitleReferenceScanner(
+                context = mockk<Context>(relaxed = true),
+                url = "https://example.test/video.mkv",
+                headers = emptyMap(),
+                store = SubtitleReferenceCueStore()
+            )
+
+            assertEquals(
+                SubtitleReferenceScanResult.Failed(SocketTimeoutException::class.simpleName!!),
+                scanner.scan()
+            )
+            scanner.close()
+        } finally {
+            unmockkObject(PlayerPlaybackNetworking)
+            unmockkStatic(Uri::class)
+        }
+    }
+
     private class SequencedDataSourceFactory(
-        initialResponse: String,
-        nonzeroResponse: String?
+        initialResponse: String?,
+        nonzeroResponse: String?,
+        private val openedLength: Long = C.LENGTH_UNSET.toLong()
     ) : DataSource.Factory {
         private val responses = listOf(
             contentRangeHeaders(initialResponse),
@@ -152,7 +231,7 @@ class SubtitleReferenceScannerTest {
                 override fun open(dataSpec: DataSpec): Long {
                     openedUri = dataSpec.uri
                     openedPositions += dataSpec.position
-                    return C.LENGTH_UNSET.toLong()
+                    return openedLength
                 }
 
                 override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
@@ -167,8 +246,8 @@ class SubtitleReferenceScannerTest {
         }
 
         private companion object {
-            fun contentRangeHeaders(value: String): Map<String, List<String>> =
-                mapOf("Content-Range" to listOf(value))
+            fun contentRangeHeaders(value: String?): Map<String, List<String>> =
+                value?.let { mapOf("Content-Range" to listOf(it)) } ?: emptyMap()
         }
     }
 

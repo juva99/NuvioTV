@@ -1,5 +1,6 @@
 package com.nuvio.tv.ui.screens.player
 
+import android.os.SystemClock
 import android.util.Log
 import androidx.media3.common.MimeTypes
 import com.nuvio.tv.R
@@ -15,12 +16,19 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
-import com.nuvio.tv.core.network.IPv4FirstDns
+import kotlinx.coroutines.withTimeoutOrNull
 import com.nuvio.tv.core.player.SubtitleCharsetDetector
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Callback
+import okhttp3.Call
+import okhttp3.Response
+import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 private val subtitleAutoSyncHttpClient: OkHttpClient by lazy {
     PlayerPlaybackNetworking.trustAllPlaybackHttpClient.newBuilder()
@@ -36,8 +44,32 @@ private val subtitleAutoSyncHttpClient: OkHttpClient by lazy {
 
 private const val SUBTITLE_DOWNLOAD_MAX_ATTEMPTS = 3
 private const val SUBTITLE_DOWNLOAD_RETRY_DELAY_MS = 350L
+private const val MAX_SUBTITLE_RESPONSE_BYTES = 4 * 1024 * 1024
 
 private const val AUTO_SYNC_REACTION_COMPENSATION_MS = 300L
+private const val AUTO_SYNC_OPERATION_TIMEOUT_MS = 120_000L
+private const val AUTO_SYNC_REFERENCE_WAIT_TIMEOUT_MS = 60_000L
+private const val AUTO_SYNC_REFERENCE_IDLE_TIMEOUT_MS = 30_000L
+private const val AUTO_SYNC_REFERENCE_POLL_MS = 750L
+
+private class SubtitleDownloadFailure(
+    message: String,
+    val retryable: Boolean
+) : IOException(message)
+
+private class AutomaticSubtitleSyncDeadlineExceeded(
+    val stage: String
+) : Exception("Automatic subtitle sync timed out while $stage")
+
+private suspend fun <T : Any> withAutomaticSubtitleSyncDeadline(
+    deadlineMs: Long,
+    stage: String,
+    block: suspend () -> T
+): T {
+    val remainingMs = (deadlineMs - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
+    return withTimeoutOrNull(remainingMs) { block() }
+        ?: throw AutomaticSubtitleSyncDeadlineExceeded(stage)
+}
 
 /**
  * Alignment is CPU bound and runs while video is decoding. `Dispatchers.Default` is sized to the
@@ -144,9 +176,12 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
     val playerAtStart = _exoPlayer
     automaticSubtitleSyncJob = scope.launch {
         val syncJob = coroutineContext[Job]
+        val operationDeadlineMs =
+            SystemClock.elapsedRealtime() + AUTO_SYNC_OPERATION_TIMEOUT_MS
         var failureStage = "starting"
         var referenceTracks = emptyList<SubtitleReferenceTrack>()
         var targetDocumentForReport: SrtDocument? = null
+        var scanFailureDiagnostic: String? = null
         _uiState.update {
             it.copy(
                 automaticSubtitleSyncRunning = true,
@@ -166,55 +201,143 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
             )
             activeSubtitleReferenceScanner = scanner
             val scanResult = try {
-                scanner.scan()
+                withAutomaticSubtitleSyncDeadline(
+                    deadlineMs = operationDeadlineMs,
+                    stage = failureStage
+                ) {
+                    scanner.scan()
+                }
             } finally {
                 scanner.close()
                 if (activeSubtitleReferenceScanner === scanner) activeSubtitleReferenceScanner = null
             }
-            referenceTracks = subtitleReferenceCueStore.snapshot()
-                .filter { it.cues.size >= SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES }
-            if (referenceTracks.isEmpty()) {
-                val message = when (scanResult) {
-                    SubtitleReferenceScanResult.Unsupported -> R.string.subtitle_automatic_sync_scan_unsupported
-                    SubtitleReferenceScanResult.IndexUnavailable -> R.string.subtitle_automatic_sync_index_unavailable
-                    SubtitleReferenceScanResult.TimedOut -> R.string.subtitle_automatic_sync_scan_timed_out
-                    is SubtitleReferenceScanResult.Indexed -> R.string.subtitle_automatic_sync_needs_dialogue
+            scanFailureDiagnostic = (scanResult as? SubtitleReferenceScanResult.Failed)?.exceptionType
+            val referenceWaitDeadline = minOf(
+                operationDeadlineMs,
+                SystemClock.elapsedRealtime() + AUTO_SYNC_REFERENCE_WAIT_TIMEOUT_MS
+            )
+            var lastReferenceSignature = ""
+            var lastReferenceProgressMs = SystemClock.elapsedRealtime()
+            while (true) {
+                referenceTracks = subtitleReferenceCueStore.snapshot()
+                val usableReferenceTracks = referenceTracks.filter {
+                    it.cues.size >= SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
                 }
-                error(context.getString(message))
+                val referenceSignature = subtitleReferenceEvidenceSignature(referenceTracks)
+                if (referenceSignature != lastReferenceSignature) {
+                    lastReferenceSignature = referenceSignature
+                    lastReferenceProgressMs = SystemClock.elapsedRealtime()
+                    val capturedCueCount = referenceTracks.maxOfOrNull { it.cues.size } ?: 0
+                    if (capturedCueCount > 0) {
+                        _uiState.update {
+                            it.copy(
+                                automaticSubtitleSyncMessage = context.getString(
+                                    R.string.subtitle_automatic_sync_cue_progress,
+                                    capturedCueCount.coerceAtMost(
+                                        SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
+                                    ),
+                                    SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
+                                )
+                            )
+                        }
+                    }
+                }
+                if (usableReferenceTracks.isNotEmpty()) break
+
+                val nowMs = SystemClock.elapsedRealtime()
+                if (nowMs >= referenceWaitDeadline ||
+                    nowMs - lastReferenceProgressMs >= AUTO_SYNC_REFERENCE_IDLE_TIMEOUT_MS
+                ) {
+                    val message = when (scanResult) {
+                        SubtitleReferenceScanResult.Unsupported ->
+                            R.string.subtitle_automatic_sync_scan_unsupported
+                        SubtitleReferenceScanResult.IndexUnavailable ->
+                            R.string.subtitle_automatic_sync_index_unavailable
+                        SubtitleReferenceScanResult.TimedOut ->
+                            R.string.subtitle_automatic_sync_scan_timed_out
+                        is SubtitleReferenceScanResult.Indexed ->
+                            R.string.subtitle_automatic_sync_needs_dialogue
+                        is SubtitleReferenceScanResult.Failed ->
+                            R.string.subtitle_automatic_sync_index_unavailable
+                    }
+                    error(context.getString(message))
+                }
+                delay(
+                    minOf(
+                        AUTO_SYNC_REFERENCE_POLL_MS,
+                        (referenceWaitDeadline - nowMs).coerceAtLeast(1L)
+                    )
+                )
             }
             failureStage = "downloading addon subtitle"
-            val targetDocument = withContext(subtitleSyncDispatcher) {
-                val rawSubtitleBody = downloadSubtitleBody(
-                    url = selectedSubtitle.url,
-                    languageHint = selectedSubtitle.lang,
-                    headers = selectedSubtitle.headers,
-                    streamUrl = streamUrlAtStart,
-                    streamHeaders = streamHeadersAtStart
-                )
-                val subtitleMime = PlayerSubtitleUtils.sniffSubtitleMimeType(
-                    rawText = rawSubtitleBody,
-                    sourceUrl = selectedSubtitle.url
-                )
-                if (subtitleMime !in setOf(MimeTypes.APPLICATION_SUBRIP, MimeTypes.TEXT_VTT)) {
-                    error(context.getString(R.string.subtitle_automatic_sync_srt_only))
+            val targetDocument = withAutomaticSubtitleSyncDeadline(
+                deadlineMs = operationDeadlineMs,
+                stage = failureStage
+            ) {
+                withContext(subtitleSyncDispatcher) {
+                    val rawSubtitleBody = downloadSubtitleBody(
+                        url = selectedSubtitle.url,
+                        languageHint = selectedSubtitle.lang,
+                        headers = selectedSubtitle.headers,
+                        streamUrl = streamUrlAtStart,
+                        streamHeaders = streamHeadersAtStart
+                    )
+                    val subtitleMime = PlayerSubtitleUtils.sniffSubtitleMimeType(
+                        rawText = rawSubtitleBody,
+                        sourceUrl = selectedSubtitle.url
+                    )
+                    if (subtitleMime !in setOf(MimeTypes.APPLICATION_SUBRIP, MimeTypes.TEXT_VTT)) {
+                        error(context.getString(R.string.subtitle_automatic_sync_srt_only))
+                    }
+                    parseAutomaticSubtitleDocument(rawSubtitleBody, selectedSubtitle.url)
                 }
-                parseAutomaticSubtitleDocument(rawSubtitleBody, selectedSubtitle.url)
             }
             targetDocumentForReport = targetDocument
             if (targetDocument.cues.size < 12) {
                 error(context.getString(R.string.subtitle_automatic_sync_invalid_srt))
             }
             failureStage = "aligning subtitle timelines"
-            val plan = withContext(subtitleSyncDispatcher) {
-                referenceTracks.mapNotNull { track ->
-                    SubtitleRateAwareAligner.align(track.cues, targetDocument.cues)?.let { plan ->
-                        plan to (plan.confidence - track.autoSyncTimingNoisePenalty())
+            var plan: SubtitleSyncPlan? = null
+            var lastAlignedReferenceSignature = ""
+            var lastAlignmentProgressMs = SystemClock.elapsedRealtime()
+            while (plan == null) {
+                referenceTracks = subtitleReferenceCueStore.snapshot()
+                val usableReferenceTracks = referenceTracks.filter {
+                    it.cues.size >= SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
+                }
+                val referenceSignature = subtitleReferenceEvidenceSignature(usableReferenceTracks)
+                if (referenceSignature != lastAlignedReferenceSignature) {
+                    lastAlignedReferenceSignature = referenceSignature
+                    lastAlignmentProgressMs = SystemClock.elapsedRealtime()
+                    val remainingMs = (operationDeadlineMs - SystemClock.elapsedRealtime())
+                        .coerceAtLeast(1L)
+                    val candidate = withTimeoutOrNull(remainingMs) {
+                        withContext(subtitleSyncDispatcher) {
+                            chooseBestSubtitleSyncPlan(
+                                referenceTracks = usableReferenceTracks,
+                                targetDocument = targetDocument
+                            )
+                        }
                     }
-                }.maxWithOrNull(
-                    compareBy<Pair<SubtitleSyncPlan, Double>> { it.second }
-                        .thenBy { it.first.model.matchedCueCount }
-                )?.first
-            } ?: error(context.getString(R.string.subtitle_automatic_sync_low_confidence))
+                    if (candidate != null) plan = candidate
+                }
+                if (plan != null) break
+
+                val nowMs = SystemClock.elapsedRealtime()
+                if (nowMs >= operationDeadlineMs ||
+                    nowMs - lastAlignmentProgressMs >= AUTO_SYNC_REFERENCE_IDLE_TIMEOUT_MS
+                ) {
+                    break
+                }
+                delay(
+                    minOf(
+                        AUTO_SYNC_REFERENCE_POLL_MS,
+                        (operationDeadlineMs - nowMs).coerceAtLeast(1L)
+                    )
+                )
+            }
+            val resolvedPlan = plan
+                ?: error(context.getString(R.string.subtitle_automatic_sync_low_confidence))
 
             if (currentStreamUrl != streamUrlAtStart || currentSubtitleContentIdentity() != contentIdentityAtStart ||
                 _exoPlayer !== playerAtStart ||
@@ -222,11 +345,21 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                 return@launch
             }
             failureStage = "writing synchronized subtitle"
-            val rewritten = withContext(subtitleSyncDispatcher) { plan.rewrite(targetDocument) }
+            val rewritten = withAutomaticSubtitleSyncDeadline(
+                deadlineMs = operationDeadlineMs,
+                stage = failureStage
+            ) {
+                withContext(subtitleSyncDispatcher) { resolvedPlan.rewrite(targetDocument) }
+            }
             if (rewritten.cues.isEmpty()) {
                 error(context.getString(R.string.subtitle_automatic_sync_low_confidence))
             }
-            val localUri = withContext(Dispatchers.IO) { subtitleSyncFileStore.write(rewritten) }
+            val localUri = withAutomaticSubtitleSyncDeadline(
+                deadlineMs = operationDeadlineMs,
+                stage = failureStage
+            ) {
+                withContext(Dispatchers.IO) { subtitleSyncFileStore.write(rewritten) }
+            }
             if (currentStreamUrl != streamUrlAtStart || currentSubtitleContentIdentity() != contentIdentityAtStart ||
                 _exoPlayer !== playerAtStart ||
                 _uiState.value.selectedAddonSubtitle?.autoSyncTrackKey() != selectedSubtitle.autoSyncTrackKey()) {
@@ -250,8 +383,8 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                     automaticSubtitleSyncRunning = false,
                     automaticSubtitleSyncMessage = context.getString(
                         R.string.subtitle_automatic_sync_applied,
-                        plan.model.segments.size,
-                        (plan.confidence * 100).toInt()
+                        resolvedPlan.model.segments.size,
+                        (resolvedPlan.confidence * 100).toInt()
                     )
                 )
             }
@@ -264,12 +397,20 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
             ) {
                 return@launch
             }
-            val failureMessage = e.message
-                ?: context.getString(R.string.subtitle_automatic_sync_failed)
+            val failureMessage = when (e) {
+                is AutomaticSubtitleSyncDeadlineExceeded -> context.getString(
+                    R.string.subtitle_automatic_sync_operation_timed_out,
+                    e.stage
+                )
+                else -> e.message ?: context.getString(R.string.subtitle_automatic_sync_failed)
+            }
+            val reportFailureReason = scanFailureDiagnostic?.let { diagnostic ->
+                "$failureMessage (scanner=$diagnostic)"
+            } ?: failureMessage
             val report = buildAutomaticSubtitleSyncFailureReport(
                 selectedSubtitle = selectedSubtitle,
                 failureStage = failureStage,
-                failureReason = failureMessage,
+                failureReason = reportFailureReason,
                 referenceTracks = referenceTracks,
                 targetDocument = targetDocumentForReport
             )
@@ -290,6 +431,27 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
         }
     }
 }
+
+internal fun subtitleReferenceEvidenceSignature(
+    referenceTracks: List<SubtitleReferenceTrack>
+): String = referenceTracks
+    .sortedBy(SubtitleReferenceTrack::key)
+    .joinToString("|") { track ->
+        "${track.key}:${track.cues.size}:${track.cues.firstOrNull()?.startMs ?: -1L}:" +
+            "${track.cues.lastOrNull()?.startMs ?: -1L}"
+    }
+
+internal fun chooseBestSubtitleSyncPlan(
+    referenceTracks: List<SubtitleReferenceTrack>,
+    targetDocument: SrtDocument
+): SubtitleSyncPlan? = referenceTracks.mapNotNull { track ->
+    SubtitleRateAwareAligner.align(track.cues, targetDocument.cues)?.let { plan ->
+        plan to (plan.confidence - track.autoSyncTimingNoisePenalty())
+    }
+}.maxWithOrNull(
+    compareBy<Pair<SubtitleSyncPlan, Double>> { it.second }
+        .thenBy { it.first.model.matchedCueCount }
+)?.first
 
 private fun PlayerRuntimeController.buildAutomaticSubtitleSyncFailureReport(
     selectedSubtitle: Subtitle,
@@ -530,6 +692,7 @@ internal suspend fun PlayerRuntimeController.downloadSubtitleBody(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                if (e is SubtitleDownloadFailure && !e.retryable) throw e
                 lastError = e
                 if (attempt < SUBTITLE_DOWNLOAD_MAX_ATTEMPTS - 1) {
                     delay(SUBTITLE_DOWNLOAD_RETRY_DELAY_MS * (attempt + 1))
@@ -547,22 +710,42 @@ internal fun isSameOrSubdomain(host: String?, parentHost: String?): Boolean {
     return child == parent || child.endsWith(".$parent")
 }
 
-private fun PlayerRuntimeController.executeSubtitleDownload(
+internal fun resolveSubtitleRequestHeaders(
+    url: String,
+    customHeaders: Map<String, String>?,
+    streamSubtitles: List<Subtitle>,
+    addonSubtitles: List<Subtitle>,
+    selectedSubtitle: Subtitle?
+): Map<String, String>? = customHeaders?.takeIf { it.isNotEmpty() }
+    ?: streamSubtitles.firstOrNull { it.url == url }?.headers
+    ?: addonSubtitles.firstOrNull { it.url == url }?.headers
+    ?: selectedSubtitle?.takeIf { it.url == url }?.headers
+
+internal fun isRetryableSubtitleHttpStatus(responseCode: Int): Boolean =
+    responseCode == 408 ||
+        responseCode == 425 ||
+        responseCode == 429 ||
+        responseCode in 500..599
+
+private suspend fun PlayerRuntimeController.executeSubtitleDownload(
     url: String,
     languageHint: String? = null,
     customHeaders: Map<String, String>? = null,
     streamUrl: String,
     streamHeaders: Map<String, String>
-): String {
+): String = suspendCancellableCoroutine { continuation ->
     val requestBuilder = Request.Builder().url(url)
     val subtitleHost = runCatching { android.net.Uri.parse(url).host }.getOrNull()
     val streamHost = runCatching { android.net.Uri.parse(streamUrl).host }.getOrNull()
     val sameDomain = isSameOrSubdomain(subtitleHost, streamHost)
 
-    val explicitHeaders = customHeaders
-        ?: streamSubtitles.firstOrNull { it.url == url }?.headers
-        ?: _uiState.value.addonSubtitles.firstOrNull { it.url == url }?.headers
-        ?: _uiState.value.selectedAddonSubtitle?.takeIf { it.url == url }?.headers
+    val explicitHeaders = resolveSubtitleRequestHeaders(
+        url = url,
+        customHeaders = customHeaders,
+        streamSubtitles = streamSubtitles,
+        addonSubtitles = _uiState.value.addonSubtitles,
+        selectedSubtitle = _uiState.value.selectedAddonSubtitle
+    )
 
     val excludedHopByHop = setOf("range", "host", "connection", "transfer-encoding")
 
@@ -605,21 +788,60 @@ private fun PlayerRuntimeController.executeSubtitleDownload(
         requestBuilder.header("Accept", "text/plain, text/vtt, application/x-subrip, */*")
     }
 
-    subtitleAutoSyncHttpClient.newCall(requestBuilder.build()).execute().use { response ->
-        if (!response.isSuccessful) {
-            error(context.getString(com.nuvio.tv.R.string.subtitle_download_failed_http, response.code))
+    val call = subtitleAutoSyncHttpClient.newCall(requestBuilder.build())
+    continuation.invokeOnCancellation { call.cancel() }
+    call.enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            if (continuation.isActive) continuation.resumeWithException(e)
         }
-        val bodyBytes = response.body?.bytes()
-            ?: error(context.getString(com.nuvio.tv.R.string.subtitle_download_empty_content))
-        if (bodyBytes.isEmpty()) {
-            error(context.getString(com.nuvio.tv.R.string.subtitle_download_empty_content))
+
+        override fun onResponse(call: Call, response: Response) {
+            try {
+                val bodyBytes = response.use { responseBody ->
+                    if (!responseBody.isSuccessful) {
+                        throw SubtitleDownloadFailure(
+                            message = context.getString(
+                                com.nuvio.tv.R.string.subtitle_download_failed_http,
+                                responseBody.code
+                            ),
+                            retryable = isRetryableSubtitleHttpStatus(responseBody.code)
+                        )
+                    }
+                    val body = responseBody.body
+                    if (body.contentLength() > MAX_SUBTITLE_RESPONSE_BYTES) {
+                        throw SubtitleDownloadFailure(
+                            message = "Subtitle response exceeds the 4 MiB safety limit",
+                            retryable = false
+                        )
+                    }
+                    body.bytes().also {
+                        if (it.size > MAX_SUBTITLE_RESPONSE_BYTES) {
+                            throw SubtitleDownloadFailure(
+                                message = "Subtitle response exceeds the 4 MiB safety limit",
+                                retryable = false
+                            )
+                        }
+                    }
+                }
+                if (bodyBytes.isEmpty()) {
+                    throw SubtitleDownloadFailure(
+                        message = context.getString(com.nuvio.tv.R.string.subtitle_download_empty_content),
+                        retryable = true
+                    )
+                }
+                val body = SubtitleCharsetDetector.decode(bodyBytes, languageHint = languageHint)
+                if (body.isBlank()) {
+                    throw SubtitleDownloadFailure(
+                        message = context.getString(com.nuvio.tv.R.string.subtitle_download_empty_content),
+                        retryable = true
+                    )
+                }
+                if (continuation.isActive) continuation.resume(body)
+            } catch (error: Throwable) {
+                if (continuation.isActive) continuation.resumeWithException(error)
+            }
         }
-        val body = SubtitleCharsetDetector.decode(bodyBytes, languageHint = languageHint)
-        if (body.isBlank()) {
-            error(context.getString(com.nuvio.tv.R.string.subtitle_download_empty_content))
-        }
-        return body
-    }
+    })
 }
 
 internal fun parseAutomaticSubtitleDocument(rawText: String, sourceUrl: String): SrtDocument {

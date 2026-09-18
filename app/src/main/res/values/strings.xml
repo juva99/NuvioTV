@@ -1696,6 +1696,7 @@
     <string name="subtitle_automatic_sync_index_unavailable">This video has no usable embedded subtitle index. Keep playing to collect cues.</string>
     <string name="subtitle_automatic_sync_scan_unsupported">Fast subtitle scanning is unavailable for this stream. Keep playing to collect cues.</string>
     <string name="subtitle_automatic_sync_scan_timed_out">The embedded subtitle index scan timed out. Keep playing to collect cues.</string>
+    <string name="subtitle_automatic_sync_operation_timed_out">Automatic subtitle sync timed out while %1$s. Keep playing dialogue and try again.</string>
     <string name="subtitle_automatic_sync_exoplayer_only">Automatic sync currently requires ExoPlayer.</string>
     <string name="subtitle_automatic_sync_invalid_srt">The selected addon subtitle is not a valid SRT or WebVTT file.</string>
     <string name="subtitle_automatic_sync_srt_only">Automatic sync currently supports SRT and WebVTT addon subtitles only.</string>

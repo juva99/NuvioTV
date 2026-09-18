@@ -25,6 +25,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import java.io.Closeable
 import java.io.EOFException
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicReference
 
 internal sealed interface SubtitleReferenceScanResult {
@@ -32,6 +33,7 @@ internal sealed interface SubtitleReferenceScanResult {
     data object Unsupported : SubtitleReferenceScanResult
     data object IndexUnavailable : SubtitleReferenceScanResult
     data object TimedOut : SubtitleReferenceScanResult
+    data class Failed(val exceptionType: String) : SubtitleReferenceScanResult
 }
 
 internal data class SubtitleContentRange(
@@ -83,6 +85,9 @@ internal class SubtitleReferenceScanner(
     } catch (cancellation: CancellationException) {
         close()
         throw cancellation
+    } catch (failure: IOException) {
+        close()
+        SubtitleReferenceScanResult.Failed(failure::class.simpleName ?: "IOException")
     }
 
     override fun close() {
@@ -94,14 +99,12 @@ internal class SubtitleReferenceScanner(
     }
 
     private fun scanBlocking(): SubtitleReferenceScanResult {
-        if (!supportsRangeRequests()) return SubtitleReferenceScanResult.Unsupported
-
         val extractor = MatroskaExtractor(DefaultSubtitleParserFactory())
         val output = IndexedSubtitleExtractorOutput(store, captureGeneration)
         var sourceAndInput: SourceAndInput? = null
         try {
-            sourceAndInput = openInput(0L)
-            var currentSourceAndInput = sourceAndInput!!
+            var currentSourceAndInput = openInput(0L)
+            sourceAndInput = currentSourceAndInput
             val sniffed = try {
                 extractor.sniff(currentSourceAndInput.input)
             } catch (_: EOFException) {
@@ -139,23 +142,6 @@ internal class SubtitleReferenceScanner(
         }
     }
 
-    private fun supportsRangeRequests(): Boolean {
-        val connection = PlayerPlaybackNetworking.openConnection(
-            url = url,
-            headers = PlayerMediaSourceFactory.sanitizeHeaders(headers),
-            method = "GET",
-            connectTimeoutMs = 5_000,
-            readTimeoutMs = 5_000,
-            range = "bytes=0-0"
-        )
-        return try {
-            connection.connect()
-            connection.responseCode == 206
-        } finally {
-            connection.disconnect()
-        }
-    }
-
     private fun openInput(position: Long): SourceAndInput {
         val source = PlayerPlaybackNetworking.createDataSourceFactory(
             context,
@@ -179,20 +165,29 @@ internal class SubtitleReferenceScanner(
                 ?.value
                 ?.firstOrNull()
             val parsedContentRange = parseSubtitleContentRange(contentRange)
-            if (parsedContentRange == null || parsedContentRange.start != position) {
+            if (parsedContentRange == null && position > 0L) {
                 throw InvalidSubtitleRangeResponseException(
                     "Expected Content-Range starting at $position, got ${contentRange ?: "<missing>"}"
                 )
             }
-            val returnedRangeLength = parsedContentRange.end - parsedContentRange.start + 1L
-            if (returnedRangeLength <= 0L ||
-                (openedLength != C.LENGTH_UNSET.toLong() && openedLength != returnedRangeLength)
-            ) {
-                throw InvalidSubtitleRangeResponseException(
-                    "Content-Range length does not match response for position $position"
-                )
+            if (parsedContentRange != null) {
+                if (parsedContentRange.start != position) {
+                    throw InvalidSubtitleRangeResponseException(
+                        "Expected Content-Range starting at $position, got $contentRange"
+                    )
+                }
+                val returnedRangeLength = parsedContentRange.end - parsedContentRange.start + 1L
+                if (returnedRangeLength <= 0L ||
+                    (openedLength != C.LENGTH_UNSET.toLong() && openedLength != returnedRangeLength)
+                ) {
+                    throw InvalidSubtitleRangeResponseException(
+                        "Content-Range length does not match response for position $position"
+                    )
+                }
             }
-            parsedContentRange.totalLength?.let { streamLength = it }
+            streamLength = parsedContentRange?.totalLength
+                ?: openedLength.takeUnless { it == C.LENGTH_UNSET.toLong() }
+                ?: streamLength
             check(!closed)
             val countingReader = androidx.media3.common.DataReader { buffer, offset, length ->
                 if (closed || bytesRead >= MAX_SCAN_BYTES) return@DataReader C.RESULT_END_OF_INPUT
@@ -228,7 +223,7 @@ internal class SubtitleReferenceScanner(
     }
 
     private companion object {
-        const val MAX_SCAN_TIME_MS = 8_000L
+        const val MAX_SCAN_TIME_MS = 12_000L
         const val MAX_SCAN_BYTES = 16L * 1024L * 1024L
         const val MAX_REOPENS = 4
     }

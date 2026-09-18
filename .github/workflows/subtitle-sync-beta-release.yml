@@ -94,6 +94,8 @@ jobs:
           ./gradlew :app:testFullDebugUnitTest \
             --tests "com.nuvio.tv.ui.screens.player.SrtDocumentTest" \
             --tests "com.nuvio.tv.ui.screens.player.SubtitleReferenceCaptureTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleReferenceScannerTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SubtitleRequestHeadersTest" \
             --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerTest" \
             --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerFixtureTest" \
             --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerGoldenTest" \
