@@ -1689,6 +1689,9 @@
     <string name="subtitle_automatic_sync">Automatic sync</string>
     <string name="subtitle_automatic_sync_description">Match this addon SRT to embedded English subtitle timing.</string>
     <string name="subtitle_automatic_sync_analyzing">Analyzing subtitle timing…</string>
+    <string name="subtitle_automatic_sync_downloading">Downloading the selected subtitle…</string>
+    <string name="subtitle_automatic_sync_matching">Matching subtitle timelines…</string>
+    <string name="subtitle_automatic_sync_waiting_for_more_cues">Captured %1$d embedded cues. Waiting for more dialogue to verify the match (minimum %2$d).</string>
     <string name="subtitle_automatic_sync_needs_dialogue">Play more dialogue so the embedded English subtitle can be analyzed.</string>
     <string name="subtitle_automatic_sync_no_reference">No supported non-forced embedded English subtitle track was detected.</string>
     <string name="subtitle_automatic_sync_cue_progress">Captured %1$d of %2$d embedded cues. Keep playing dialogue.</string>

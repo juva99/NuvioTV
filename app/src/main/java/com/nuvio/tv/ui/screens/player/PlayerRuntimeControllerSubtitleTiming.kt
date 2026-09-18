@@ -49,8 +49,9 @@ private const val MAX_SUBTITLE_RESPONSE_BYTES = 4 * 1024 * 1024
 private const val AUTO_SYNC_REACTION_COMPENSATION_MS = 300L
 private const val AUTO_SYNC_OPERATION_TIMEOUT_MS = 120_000L
 private const val AUTO_SYNC_REFERENCE_WAIT_TIMEOUT_MS = 60_000L
-private const val AUTO_SYNC_REFERENCE_IDLE_TIMEOUT_MS = 30_000L
+private const val AUTO_SYNC_REFERENCE_IDLE_TIMEOUT_MS = 45_000L
 private const val AUTO_SYNC_REFERENCE_POLL_MS = 750L
+private const val AUTO_SYNC_MIN_LIVE_REFERENCE_SPAN_MS = 45_000L
 
 private class SubtitleDownloadFailure(
     message: String,
@@ -221,7 +222,10 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
             while (true) {
                 referenceTracks = subtitleReferenceCueStore.snapshot()
                 val usableReferenceTracks = referenceTracks.filter {
-                    it.cues.size >= SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
+                    isSubtitleReferenceTrackReady(
+                        track = it,
+                        indexedReferenceAvailable = scanResult is SubtitleReferenceScanResult.Indexed
+                    )
                 }
                 val referenceSignature = subtitleReferenceEvidenceSignature(referenceTracks)
                 if (referenceSignature != lastReferenceSignature) {
@@ -229,15 +233,35 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                     lastReferenceProgressMs = SystemClock.elapsedRealtime()
                     val capturedCueCount = referenceTracks.maxOfOrNull { it.cues.size } ?: 0
                     if (capturedCueCount > 0) {
+                        val longestSpanMs = referenceTracks.maxOf(::subtitleReferenceTrackSpanMs)
+                        val progressMessage = if (
+                            capturedCueCount >= SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES &&
+                            longestSpanMs < AUTO_SYNC_MIN_LIVE_REFERENCE_SPAN_MS &&
+                            scanResult !is SubtitleReferenceScanResult.Indexed
+                        ) {
+                            R.string.subtitle_automatic_sync_waiting_for_more_cues
+                        } else {
+                            R.string.subtitle_automatic_sync_cue_progress
+                        }
                         _uiState.update {
                             it.copy(
-                                automaticSubtitleSyncMessage = context.getString(
-                                    R.string.subtitle_automatic_sync_cue_progress,
-                                    capturedCueCount.coerceAtMost(
+                                automaticSubtitleSyncMessage = if (
+                                    progressMessage == R.string.subtitle_automatic_sync_waiting_for_more_cues
+                                ) {
+                                    context.getString(
+                                        progressMessage,
+                                        capturedCueCount,
                                         SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
-                                    ),
-                                    SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
-                                )
+                                    )
+                                } else {
+                                    context.getString(
+                                        progressMessage,
+                                        capturedCueCount.coerceAtMost(
+                                            SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
+                                        ),
+                                        SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
+                                    )
+                                }
                             )
                         }
                     }
@@ -248,17 +272,21 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                 if (nowMs >= referenceWaitDeadline ||
                     nowMs - lastReferenceProgressMs >= AUTO_SYNC_REFERENCE_IDLE_TIMEOUT_MS
                 ) {
-                    val message = when (scanResult) {
-                        SubtitleReferenceScanResult.Unsupported ->
-                            R.string.subtitle_automatic_sync_scan_unsupported
-                        SubtitleReferenceScanResult.IndexUnavailable ->
-                            R.string.subtitle_automatic_sync_index_unavailable
-                        SubtitleReferenceScanResult.TimedOut ->
-                            R.string.subtitle_automatic_sync_scan_timed_out
-                        is SubtitleReferenceScanResult.Indexed ->
-                            R.string.subtitle_automatic_sync_needs_dialogue
-                        is SubtitleReferenceScanResult.Failed ->
-                            R.string.subtitle_automatic_sync_index_unavailable
+                    val message = if (referenceTracks.any { it.cues.isNotEmpty() }) {
+                        R.string.subtitle_automatic_sync_needs_dialogue
+                    } else {
+                        when (scanResult) {
+                            SubtitleReferenceScanResult.Unsupported ->
+                                R.string.subtitle_automatic_sync_scan_unsupported
+                            SubtitleReferenceScanResult.IndexUnavailable ->
+                                R.string.subtitle_automatic_sync_index_unavailable
+                            SubtitleReferenceScanResult.TimedOut ->
+                                R.string.subtitle_automatic_sync_scan_timed_out
+                            is SubtitleReferenceScanResult.Indexed ->
+                                R.string.subtitle_automatic_sync_needs_dialogue
+                            is SubtitleReferenceScanResult.Failed ->
+                                R.string.subtitle_automatic_sync_index_unavailable
+                        }
                     }
                     error(context.getString(message))
                 }
@@ -270,6 +298,12 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                 )
             }
             failureStage = "downloading addon subtitle"
+            _uiState.update {
+                it.copy(
+                    automaticSubtitleSyncMessage =
+                        context.getString(R.string.subtitle_automatic_sync_downloading)
+                )
+            }
             val targetDocument = withAutomaticSubtitleSyncDeadline(
                 deadlineMs = operationDeadlineMs,
                 stage = failureStage
@@ -297,13 +331,23 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                 error(context.getString(R.string.subtitle_automatic_sync_invalid_srt))
             }
             failureStage = "aligning subtitle timelines"
+            _uiState.update {
+                it.copy(
+                    automaticSubtitleSyncMessage =
+                        context.getString(R.string.subtitle_automatic_sync_matching)
+                )
+            }
             var plan: SubtitleSyncPlan? = null
             var lastAlignedReferenceSignature = ""
             var lastAlignmentProgressMs = SystemClock.elapsedRealtime()
+            var waitingForMoreEvidence = false
             while (plan == null) {
                 referenceTracks = subtitleReferenceCueStore.snapshot()
                 val usableReferenceTracks = referenceTracks.filter {
-                    it.cues.size >= SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
+                    isSubtitleReferenceTrackReady(
+                        track = it,
+                        indexedReferenceAvailable = scanResult is SubtitleReferenceScanResult.Indexed
+                    )
                 }
                 val referenceSignature = subtitleReferenceEvidenceSignature(usableReferenceTracks)
                 if (referenceSignature != lastAlignedReferenceSignature) {
@@ -322,6 +366,19 @@ internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
                     if (candidate != null) plan = candidate
                 }
                 if (plan != null) break
+                if (!waitingForMoreEvidence) {
+                    waitingForMoreEvidence = true
+                    val capturedCueCount = referenceTracks.maxOfOrNull { it.cues.size } ?: 0
+                    _uiState.update {
+                        it.copy(
+                            automaticSubtitleSyncMessage = context.getString(
+                                R.string.subtitle_automatic_sync_waiting_for_more_cues,
+                                capturedCueCount,
+                                SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
+                            )
+                        )
+                    }
+                }
 
                 val nowMs = SystemClock.elapsedRealtime()
                 if (nowMs >= operationDeadlineMs ||
@@ -440,6 +497,18 @@ internal fun subtitleReferenceEvidenceSignature(
         "${track.key}:${track.cues.size}:${track.cues.firstOrNull()?.startMs ?: -1L}:" +
             "${track.cues.lastOrNull()?.startMs ?: -1L}"
     }
+
+internal fun subtitleReferenceTrackSpanMs(track: SubtitleReferenceTrack): Long {
+    val first = track.cues.minOfOrNull(SrtCue::startMs) ?: return 0L
+    val last = track.cues.maxOfOrNull(SrtCue::startMs) ?: return 0L
+    return (last - first).coerceAtLeast(0L)
+}
+
+internal fun isSubtitleReferenceTrackReady(
+    track: SubtitleReferenceTrack,
+    indexedReferenceAvailable: Boolean
+): Boolean = track.cues.size >= SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES &&
+    (indexedReferenceAvailable || subtitleReferenceTrackSpanMs(track) >= AUTO_SYNC_MIN_LIVE_REFERENCE_SPAN_MS)
 
 internal fun chooseBestSubtitleSyncPlan(
     referenceTracks: List<SubtitleReferenceTrack>,

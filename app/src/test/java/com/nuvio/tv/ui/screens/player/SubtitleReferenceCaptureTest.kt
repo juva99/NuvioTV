@@ -109,4 +109,22 @@ class SubtitleReferenceCaptureTest {
 
         assertEquals(emptyList<SubtitleReferenceTrack>(), store.snapshot())
     }
+
+    @Test
+    fun `live references need a longer span than the minimum cue count`() {
+        val shortTrack = SubtitleReferenceTrack(
+            key = "english",
+            name = "English",
+            language = "en",
+            sourceMimeType = MimeTypes.APPLICATION_SUBRIP,
+            cues = List(17) { index ->
+                val startMs = index * 2_350L
+                SrtCue(startMs, startMs + 1_000L, " ")
+            }
+        )
+
+        assertEquals(37_600L, subtitleReferenceTrackSpanMs(shortTrack))
+        assertFalse(isSubtitleReferenceTrackReady(shortTrack, indexedReferenceAvailable = false))
+        assertTrue(isSubtitleReferenceTrackReady(shortTrack, indexedReferenceAvailable = true))
+    }
 }
