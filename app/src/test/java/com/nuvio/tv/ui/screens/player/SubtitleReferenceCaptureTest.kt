@@ -111,7 +111,7 @@ class SubtitleReferenceCaptureTest {
     }
 
     @Test
-    fun `live references need a longer span than the minimum cue count`() {
+    fun `minimum cue count makes a live reference ready`() {
         val shortTrack = SubtitleReferenceTrack(
             key = "english",
             name = "English",
@@ -123,8 +123,6 @@ class SubtitleReferenceCaptureTest {
             }
         )
 
-        assertEquals(37_600L, subtitleReferenceTrackSpanMs(shortTrack))
-        assertFalse(isSubtitleReferenceTrackReady(shortTrack, indexedReferenceAvailable = false))
-        assertTrue(isSubtitleReferenceTrackReady(shortTrack, indexedReferenceAvailable = true))
+        assertTrue(isSubtitleReferenceTrackReady(shortTrack))
     }
 }
