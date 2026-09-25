@@ -1687,6 +1687,9 @@
     <string name="subtitle_auto_sync_select_addon_track">Select an addon subtitle track to use Auto Sync.</string>
     <string name="subtitle_auto_sync_applied">Sync applied: %1$s</string>
     <string name="subtitle_automatic_sync">Automatic sync</string>
+    <string name="subtitle_automatic_sync_scan_on_demand">Scan the video for embedded subtitle timing when sync starts.</string>
+    <string name="subtitle_aggressive_sync">Aggressive subtitle matching</string>
+    <string name="subtitle_aggressive_sync_description">When syncing manually, try other same-language add-on subtitles and switch to a better match. Off by default.</string>
     <string name="subtitle_automatic_sync_description">Match this addon SRT to embedded English subtitle timing.</string>
     <string name="subtitle_automatic_sync_analyzing">Analyzing subtitle timing…</string>
     <string name="subtitle_automatic_sync_downloading">Downloading the selected subtitle…</string>
@@ -1704,9 +1707,12 @@
     <string name="subtitle_automatic_sync_operation_timed_out">Automatic subtitle sync timed out while %1$s. Keep playing dialogue and try again.</string>
     <string name="subtitle_automatic_sync_exoplayer_only">Automatic sync currently requires ExoPlayer.</string>
     <string name="subtitle_automatic_sync_invalid_srt">The selected addon subtitle is not a valid SRT or WebVTT file.</string>
+    <string name="subtitle_automatic_sync_unavailable">Could not download or analyze a supported add-on subtitle.</string>
     <string name="subtitle_automatic_sync_srt_only">Automatic sync currently supports SRT and WebVTT addon subtitles only.</string>
     <string name="subtitle_automatic_sync_low_confidence">The subtitle timelines could not be matched confidently. Try again after more dialogue has played.</string>
     <string name="subtitle_automatic_sync_applied">Automatic sync applied with %1$d timing regions (%2$d%% confidence).</string>
+    <string name="subtitle_automatic_sync_applied_v2">Automatic sync applied (%1$d%% confidence).</string>
+    <string name="subtitle_automatic_sync_applied_replaced">Automatic sync applied with a better same-language subtitle (%1$d%% confidence).</string>
     <string name="subtitle_automatic_sync_failed">Automatic subtitle sync failed.</string>
     <string name="subtitle_timing_loading">Loading subtitle lines…</string>
     <string name="subtitle_timing_no_lines_found">No subtitle lines were found around this moment.</string>

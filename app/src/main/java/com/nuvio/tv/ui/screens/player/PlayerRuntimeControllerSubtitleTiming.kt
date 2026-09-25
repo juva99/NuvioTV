@@ -7,12 +7,20 @@ import com.nuvio.tv.R
 import com.nuvio.tv.data.repository.SubtitleSyncFailureReportInput
 import com.nuvio.tv.data.repository.SubtitleSyncReferenceInput
 import com.nuvio.tv.domain.model.Subtitle
+import com.nuvio.tv.ui.screens.player.autosync.AutoSyncAnalysisOutcome
+import com.nuvio.tv.ui.screens.player.autosync.AutoSyncPreferences
+import com.nuvio.tv.ui.screens.player.autosync.AutomaticSubtitleSync
+import com.nuvio.tv.ui.screens.player.autosync.EmbeddedSubtitleCueStore
+import com.nuvio.tv.ui.screens.player.autosync.retimeSubtitleDocument
+import com.nuvio.tv.ui.screens.player.autosync.sameLanguageAutoSyncCandidates
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -62,14 +70,15 @@ private class AutomaticSubtitleSyncDeadlineExceeded(
     val stage: String
 ) : Exception("Automatic subtitle sync timed out while $stage")
 
-private suspend fun <T : Any> withAutomaticSubtitleSyncDeadline(
+private suspend fun <T> withAutomaticSubtitleSyncDeadline(
     deadlineMs: Long,
     stage: String,
     block: suspend () -> T
 ): T {
     val remainingMs = (deadlineMs - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
-    return withTimeoutOrNull(remainingMs) { block() }
+    val result = withTimeoutOrNull(remainingMs) { Result.success(block()) }
         ?: throw AutomaticSubtitleSyncDeadlineExceeded(stage)
+    return result.getOrThrow()
 }
 
 /**
@@ -156,6 +165,213 @@ internal fun PlayerRuntimeController.reloadSubtitleAutoSyncCues() {
 }
 
 internal fun PlayerRuntimeController.automaticallySyncSubtitle() {
+    automaticallySyncSubtitleV2()
+}
+
+private fun PlayerRuntimeController.automaticallySyncSubtitleV2() {
+    if (isUsingMpvEngine()) {
+        _uiState.update {
+            it.copy(automaticSubtitleSyncMessage = context.getString(R.string.subtitle_automatic_sync_exoplayer_only))
+        }
+        return
+    }
+    val selectedSubtitle = _uiState.value.selectedAddonSubtitle
+    if (selectedSubtitle == null) {
+        _uiState.update {
+            it.copy(automaticSubtitleSyncMessage = context.getString(R.string.subtitle_auto_sync_select_addon_track))
+        }
+        return
+    }
+    AutoSyncPreferences.ensureLoaded(context)
+    val alternatives = if (AutoSyncPreferences.aggressiveMode.value) {
+        sameLanguageAutoSyncCandidates(selectedSubtitle, _uiState.value.addonSubtitles)
+    } else {
+        emptyList()
+    }
+    automaticSubtitleSyncJob?.cancel()
+    activeSubtitleReferenceScanner?.close()
+    activeSubtitleReferenceScanner = null
+    val streamUrlAtStart = currentStreamUrl
+    val streamHeadersAtStart = currentHeaders.toMap()
+    val contentIdentityAtStart = currentSubtitleContentIdentity()
+    val playerAtStart = _exoPlayer
+    automaticSubtitleSyncJob = scope.launch {
+        val syncJob = coroutineContext[Job]
+        var targetDocumentForReport: SrtDocument? = null
+        var failureStage = "matching subtitle timelines"
+        _uiState.update {
+            it.copy(
+                automaticSubtitleSyncRunning = true,
+                automaticSubtitleSyncMessage = context.getString(R.string.subtitle_automatic_sync_analyzing)
+            )
+        }
+        try {
+            withContext(subtitleSyncDispatcher) {
+                subtitleReferenceCueStore.snapshot().forEach { track ->
+                    track.cues.forEachIndexed { index, cue ->
+                        if (index % 128 == 0) currentCoroutineContext().ensureActive()
+                        EmbeddedSubtitleCueStore.record(
+                            sourceKey = streamUrlAtStart,
+                            trackKey = track.key,
+                            language = track.language,
+                            label = track.name,
+                            selectionFlags = 0,
+                            roleFlags = 0,
+                            cue = SubtitleSyncCue(cue.startMs, cue.endMs, cue.text)
+                        )
+                    }
+                }
+            }
+            var outcome: AutoSyncAnalysisOutcome? = null
+            val selectedBodyDeferred = async {
+                try {
+                    downloadSubtitleBody(
+                        selectedSubtitle.url,
+                        selectedSubtitle.lang,
+                        selectedSubtitle.headers,
+                        streamUrlAtStart,
+                        streamHeadersAtStart
+                    )
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (error: Exception) {
+                    Log.w(PlayerRuntimeController.TAG, "Selected subtitle download failed for sync", error)
+                    null
+                }
+            }
+            val resolved = try {
+                withAutomaticSubtitleSyncDeadline(
+                    SystemClock.elapsedRealtime() + AUTO_SYNC_OPERATION_TIMEOUT_MS,
+                    failureStage
+                ) {
+                    AutomaticSubtitleSync.findTimelineRetime(
+                        sourceKey = streamUrlAtStart,
+                        sourceHeaders = streamHeadersAtStart,
+                        selectedSubtitleUrl = selectedSubtitle.url,
+                        selectedSubtitleHeaders = selectedSubtitle.headers.orEmpty(),
+                        selectedSubtitleBodyDeferred = selectedBodyDeferred,
+                        preferredLanguage = selectedSubtitle.lang,
+                        alternativeSubtitles = alternatives,
+                        onReferenceReady = {
+                            _uiState.update {
+                                it.copy(automaticSubtitleSyncMessage =
+                                    context.getString(R.string.subtitle_automatic_sync_matching))
+                            }
+                        },
+                        onAnalysisOutcome = { outcome = it }
+                    )
+                }
+            } finally {
+                selectedBodyDeferred.cancel()
+            }
+            if (resolved == null &&
+                outcome == AutoSyncAnalysisOutcome.NO_USABLE_REFERENCE
+            ) {
+                automaticSubtitleSyncJob = null
+                automaticallySyncSubtitleLegacy()
+                return@launch
+            }
+            if (resolved == null) {
+                val message = when (outcome) {
+                    AutoSyncAnalysisOutcome.NO_SUBTITLE_TRACKS ->
+                        R.string.subtitle_automatic_sync_no_reference
+                    AutoSyncAnalysisOutcome.SUBTITLE_UNAVAILABLE ->
+                        R.string.subtitle_automatic_sync_unavailable
+                    else -> R.string.subtitle_automatic_sync_low_confidence
+                }
+                error(context.getString(message))
+            }
+            if (currentStreamUrl != streamUrlAtStart ||
+                currentSubtitleContentIdentity() != contentIdentityAtStart ||
+                _exoPlayer !== playerAtStart ||
+                _uiState.value.selectedAddonSubtitle?.autoSyncTrackKey() != selectedSubtitle.autoSyncTrackKey()
+            ) return@launch
+
+            val matchedSubtitle = if (resolved.subtitleUrl == selectedSubtitle.url) {
+                selectedSubtitle
+            } else {
+                _uiState.value.addonSubtitles.firstOrNull { it.url == resolved.subtitleUrl }
+                    ?: error("Matched subtitle is no longer available")
+            }
+            failureStage = "writing synchronized subtitle"
+            val body = resolved.subtitleBody ?: downloadSubtitleBody(
+                matchedSubtitle.url,
+                matchedSubtitle.lang,
+                matchedSubtitle.headers,
+                streamUrlAtStart,
+                streamHeadersAtStart
+            )
+            val targetDocument = parseAutomaticSubtitleDocument(body, matchedSubtitle.url)
+            targetDocumentForReport = targetDocument
+            val rewritten = withContext(subtitleSyncDispatcher) {
+                retimeSubtitleDocument(targetDocument, resolved.timeline)
+                    ?: error(context.getString(R.string.subtitle_automatic_sync_low_confidence))
+            }
+            val localUri = withContext(Dispatchers.IO) { subtitleSyncFileStore.write(rewritten) }
+            if (currentStreamUrl != streamUrlAtStart ||
+                currentSubtitleContentIdentity() != contentIdentityAtStart ||
+                _exoPlayer !== playerAtStart ||
+                _uiState.value.selectedAddonSubtitle?.autoSyncTrackKey() != selectedSubtitle.autoSyncTrackKey()
+            ) return@launch
+
+            val synchronizedOverride = SynchronizedSubtitleOverride(
+                subtitleKey = addonSubtitleKey(matchedSubtitle),
+                streamUrl = streamUrlAtStart,
+                contentIdentity = contentIdentityAtStart,
+                uri = localUri,
+                document = rewritten
+            )
+            synchronizedSubtitleOverride = synchronizedOverride
+            if (matchedSubtitle.url != selectedSubtitle.url) {
+                _uiState.update { it.copy(selectedAddonSubtitle = matchedSubtitle, selectedSubtitleTrackIndex = -1) }
+                rememberAddonSubtitleSelection(matchedSubtitle)
+            }
+            replaceSubtitleAutoSyncCache(matchedSubtitle, synchronizedOverride)
+            subtitleDelayUs.set(0L)
+            _uiState.update { it.copy(subtitleDelayMs = 0) }
+            persistTrackPreference()
+            reloadAddonSubtitlesForSync(matchedSubtitle)
+            _uiState.update {
+                it.copy(
+                    automaticSubtitleSyncRunning = false,
+                    automaticSubtitleSyncMessage = context.getString(
+                        if (matchedSubtitle.url != selectedSubtitle.url) {
+                            R.string.subtitle_automatic_sync_applied_replaced
+                        } else {
+                            R.string.subtitle_automatic_sync_applied_v2
+                        },
+                        resolved.assessment.confidencePercent
+                    )
+                )
+            }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (error: Exception) {
+            if (currentStreamUrl == streamUrlAtStart &&
+                currentSubtitleContentIdentity() == contentIdentityAtStart
+            ) {
+                val message = error.message ?: context.getString(R.string.subtitle_automatic_sync_failed)
+                _uiState.update { it.copy(automaticSubtitleSyncMessage = message) }
+                reportAutomaticSubtitleSyncFailure(
+                    buildAutomaticSubtitleSyncFailureReport(
+                        selectedSubtitle,
+                        failureStage,
+                        message,
+                        subtitleReferenceCueStore.snapshot(),
+                        targetDocumentForReport
+                    )
+                )
+            }
+        } finally {
+            if (automaticSubtitleSyncJob === syncJob) {
+                automaticSubtitleSyncJob = null
+                _uiState.update { it.copy(automaticSubtitleSyncRunning = false) }
+            }
+        }
+    }
+}
+
+private fun PlayerRuntimeController.automaticallySyncSubtitleLegacy() {
     if (isUsingMpvEngine()) {
         _uiState.update {
             it.copy(automaticSubtitleSyncMessage = context.getString(R.string.subtitle_automatic_sync_exoplayer_only))

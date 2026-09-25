@@ -79,6 +79,7 @@ import com.nuvio.tv.data.local.InternalPlayerEngine
 import com.nuvio.tv.data.local.PlayerSettings
 import com.nuvio.tv.data.repository.PlaybackIssueErrorInput
 import com.nuvio.tv.domain.model.Subtitle
+import com.nuvio.tv.ui.screens.player.autosync.EmbeddedSubtitleCueStore
 import io.github.peerless2012.ass.media.kt.buildWithAssSupport
 import io.github.peerless2012.ass.media.type.AssRenderType
 import kotlinx.coroutines.async
@@ -896,6 +897,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                     ).withNuvioMp4Extractor()
 
             subtitleReferenceCueStore.clear()
+            EmbeddedSubtitleCueStore.reset(url)
             val subtitleCaptureExtractorsFactory = SubtitleReferenceCaptureExtractorsFactory(
                 delegate = effectiveExtractorsFactory,
                 store = subtitleReferenceCueStore

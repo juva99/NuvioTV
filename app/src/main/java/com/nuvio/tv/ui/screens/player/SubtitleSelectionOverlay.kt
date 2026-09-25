@@ -922,12 +922,8 @@ private fun SubtitleStyleRail(
                         val detail = automaticSyncMessage ?: when {
                             !automaticSyncEngineSupported -> stringResource(R.string.subtitle_automatic_sync_exoplayer_only)
                             selectedAddonSubtitle == null -> stringResource(R.string.subtitle_timing_select_addon_first)
-                            automaticSyncReferenceTrackCount == 0 -> stringResource(R.string.subtitle_automatic_sync_no_reference)
-                            !automaticSyncAvailable -> stringResource(
-                                R.string.subtitle_automatic_sync_cue_progress,
-                                automaticSyncCapturedCueCount,
-                                SubtitleReferenceCaptureStatus.MINIMUM_SYNC_CUES
-                            )
+                            automaticSyncReferenceTrackCount == 0 || !automaticSyncAvailable ->
+                                stringResource(R.string.subtitle_automatic_sync_scan_on_demand)
                             else -> stringResource(R.string.subtitle_automatic_sync_description)
                         }
                         Text(

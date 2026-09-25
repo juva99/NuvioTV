@@ -19,10 +19,14 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.FormatBold
 import androidx.compose.material.icons.filled.FormatSize
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.VerticalAlignBottom
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -38,6 +42,7 @@ import com.nuvio.tv.data.local.LibassRenderType
 import com.nuvio.tv.data.local.PlayerSettings
 import com.nuvio.tv.data.local.SubtitleLanguageOption
 import com.nuvio.tv.ui.components.NuvioDialog
+import com.nuvio.tv.ui.screens.player.autosync.AutoSyncPreferences
 
 private val subtitleColors = listOf(
     Color.White,
@@ -153,6 +158,21 @@ internal fun LazyListScope.subtitleSettingsItems(
             subtitle = stringResource(R.string.sub_strip_sdh_desc),
             isChecked = playerSettings.subtitleStyle.stripSdh,
             onCheckedChange = onSetSubtitleStripSdh,
+            onFocused = onItemFocused,
+            enabled = enabled
+        )
+    }
+
+    item(key = "subtitle_aggressive_sync") {
+        val context = LocalContext.current
+        AutoSyncPreferences.ensureLoaded(context)
+        val aggressive by AutoSyncPreferences.aggressiveMode.collectAsStateWithLifecycle()
+        ToggleSettingsItem(
+            icon = Icons.Default.Sync,
+            title = stringResource(R.string.subtitle_aggressive_sync),
+            subtitle = stringResource(R.string.subtitle_aggressive_sync_description),
+            isChecked = aggressive,
+            onCheckedChange = { AutoSyncPreferences.setAggressiveMode(context, it) },
             onFocused = onItemFocused,
             enabled = enabled
         )

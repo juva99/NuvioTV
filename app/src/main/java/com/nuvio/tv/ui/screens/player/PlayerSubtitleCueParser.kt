@@ -3,6 +3,17 @@ package com.nuvio.tv.ui.screens.player
 internal object PlayerSubtitleCueParser {
     private val timestampRegex = Regex("""(?:(\d+):)?(\d{1,2}):(\d{2})([.,](\d+))?""")
 
+    internal fun parse(
+        text: String,
+        sourceUrl: String?,
+        cancellationCheck: (() -> Unit)?
+    ): List<SubtitleSyncCue> {
+        cancellationCheck?.invoke()
+        val cues = parseFromText(text, sourceUrl.orEmpty())
+        cancellationCheck?.invoke()
+        return cues
+    }
+
     fun parseFromText(rawText: String, sourceUrl: String): List<SubtitleSyncCue> {
         val cleanedText = rawText
             .replace("\uFEFF", "")

@@ -27,6 +27,20 @@ cd NuvioTV
 
 Nuvio TV is built with Kotlin, Jetpack Compose, TV Material 3, and Media3. Development requires Android Studio, a JDK, and the Android SDK.
 
+## Subtitle synchronization
+
+Select an add-on SRT or WebVTT subtitle in the player and use **Automatic sync**
+in the subtitle timing dialog. Matching now uses the AutoSync V2 delay-first,
+activity-alignment, and grouped-cue retiming engine adapted from
+[DavidVamaiotu/NuvioTV](https://github.com/DavidVamaiotu/NuvioTV).
+The existing player controls, status messages, and synchronized subtitle
+playback remain in place. When no usable indexed reference is available, the
+existing reference scanner is retained as a fallback.
+
+**Aggressive subtitle matching** in playback subtitle settings is off by
+default. Turning it on also searches other same-language add-on subtitles and
+may select a better match. Without it, only the selected subtitle is matched.
+
 ## License
 
 [GNU General Public License v3.0](./LICENSE)
