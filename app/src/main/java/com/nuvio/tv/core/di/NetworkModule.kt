@@ -99,14 +99,14 @@ object NetworkModule {
         .add(KotlinJsonAdapterFactory())
         .build()
 
+    /** Validating client for fixed first-party endpoints. Addon URLs use `addonPermissive`. */
     @Provides
     @Singleton
     fun provideOkHttpClient(@ApplicationContext context: Context): OkHttpClient {
-        // First-party APIs use the platform trust store. Addon URLs get the permissive client
-        // below because self-hosted addon servers may use private certificates.
         return OkHttpClient.Builder()
             .dns(IPv4FirstDns())
-            .cache(Cache(File(context.cacheDir, "http_cache"), 50L * 1024 * 1024)) // 50 MB disk cache
+            // Keep separate from the old trust-all cache. Cached responses bypass a new TLS handshake.
+            .cache(Cache(File(context.cacheDir, "http_cache_v2"), 50L * 1024 * 1024)) // 50 MB disk cache
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .addInterceptor { chain ->

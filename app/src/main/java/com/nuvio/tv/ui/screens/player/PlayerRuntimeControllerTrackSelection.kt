@@ -72,10 +72,10 @@ internal fun PlayerRuntimeController.selectAudioTrack(trackIndex: Int) {
                             .buildUpon()
                             .setOverrideForType(override)
                             .build()
-                        // Nudge the player to avoid infinite buffering after audio track switch
-                        // where the new track requires a different segment.
-                        val pos = player.currentPosition
-                        if (pos > 0) player.seekTo((pos - 1).coerceAtLeast(0))
+                        if (hasRenderedFirstFrame) {
+                            val pos = player.currentPosition
+                            if (pos > 0) player.seekTo((pos - 1).coerceAtLeast(0))
+                        }
                         return
                     }
                     currentAudioIndex++
@@ -440,6 +440,14 @@ internal data class SynchronizedSubtitleOverride(
     val uri: android.net.Uri,
     val document: SrtDocument
 )
+/** Routes for [SubtitleRoutingDataSourceFactory], keyed by configuration URI. When subtitles share a URI, the first route is used. */
+internal fun PlayerRuntimeController.subtitleRoutes(subtitles: List<Subtitle>): Map<String, SubtitleRoute> =
+    buildMap {
+        subtitles.forEach { subtitle ->
+            val key = toSubtitleConfiguration(subtitle).uri.toString()
+            if (key !in this) put(key, SubtitleRoute(subtitle.url, subtitle.headers))
+        }
+    }
 
 internal fun PlayerRuntimeController.toSubtitleConfiguration(subtitle: Subtitle): MediaItem.SubtitleConfiguration {
     val normalizedLang = PlayerSubtitleUtils.normalizeLanguageCode(subtitle.lang)
@@ -493,6 +501,7 @@ internal fun PlayerRuntimeController.reloadAddonSubtitlesForSync(subtitle: Subti
             url = currentStreamUrl,
             headers = currentHeaders,
             subtitleConfigurations = allSubtitles.map(::toSubtitleConfiguration),
+            subtitleRoutes = subtitleRoutes(allSubtitles),
             filename = currentFilename,
             responseHeaders = currentStreamResponseHeaders,
             mimeTypeOverride = currentStreamMimeType,
@@ -715,10 +724,12 @@ internal fun PlayerRuntimeController.attachAddonSubtitleViaMediaReload(subtitle:
             url = currentStreamUrl,
             headers = currentHeaders,
             subtitleConfigurations = subtitleConfigurations,
+            subtitleRoutes = subtitleRoutes(_uiState.value.addonSubtitles + subtitle),
             filename = currentFilename,
             responseHeaders = currentStreamResponseHeaders,
             mimeTypeOverride = currentStreamMimeType,
-            audioDelayUsProvider = audioDelayUs::get
+            audioDelayUsProvider = audioDelayUs::get,
+            cacheKey = currentStreamCacheKey
         ),
         currentPosition
     )

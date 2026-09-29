@@ -78,6 +78,7 @@ class SubtitleSyncIntegrationRegressionTest {
                 url = any(),
                 headers = any(),
                 subtitleConfigurations = any(),
+                subtitleRoutes = any(),
                 filename = any(),
                 responseHeaders = any(),
                 mimeTypeOverride = any(),

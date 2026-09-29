@@ -42,6 +42,8 @@ internal fun PlayerRuntimeController.attachMpvView(view: NuvioMpvSurfaceView?) {
         applyPendingMpvSeekIfNeeded(view)
         hasRenderedFirstFrame = false
         hasObservedFreshPlaybackForCurrentStream = false
+        endDetectionArmed = false
+        mpvEofSeenClear = false
         _uiState.update {
             it.copy(
                 isBuffering = true,
@@ -152,6 +154,8 @@ internal fun PlayerRuntimeController.initializeMpvPlayer(
 
         hasRenderedFirstFrame = false
         hasObservedFreshPlaybackForCurrentStream = false
+        endDetectionArmed = false
+        mpvEofSeenClear = false
         _uiState.update {
             it.copy(
                 isBuffering = true,

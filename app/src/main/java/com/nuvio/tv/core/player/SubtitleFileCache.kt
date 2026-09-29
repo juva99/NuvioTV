@@ -21,6 +21,8 @@ import javax.inject.Singleton
 @Singleton
 class SubtitleFileCache @Inject constructor(
     @ApplicationContext private val context: Context,
+    // Callers pass addon-provided subtitle URLs, so use the permissive addon client.
+    // Keep it that way: anything routed through here inherits permissive TLS.
     @param:Named("addonPermissive") private val okHttpClient: OkHttpClient
 ) {
     private val cacheDir: File
