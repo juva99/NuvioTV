@@ -1,0 +1,101 @@
+name: Follow Upstream Stable Releases
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-stable-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'juva99/NuvioTV'
+    runs-on: ubuntu-latest
+    outputs:
+      pending: ${{ steps.plan.outputs.pending }}
+      release_tag: ${{ steps.plan.outputs.release_tag }}
+      release_title: ${{ steps.plan.outputs.release_title }}
+      version_code: ${{ steps.plan.outputs.version_code }}
+      release_notes: ${{ steps.plan.outputs.release_notes }}
+      release_ref: ${{ steps.merge.outputs.release_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Validate release planner
+        run: PYTHONPATH=scripts python3 -m unittest discover -s scripts/tests -v
+
+      - name: Find next upstream stable release
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/upstream_release.py plan \
+            --repository "$GITHUB_REPOSITORY" \
+            --upstream NuvioMedia/NuvioTV \
+            --baseline-tag 1.0.0
+
+      - name: Merge upstream release without discarding fork changes
+        if: steps.plan.outputs.pending == 'true'
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_TAG: ${{ steps.plan.outputs.upstream_tag }}
+          UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --no-tags https://github.com/NuvioMedia/NuvioTV.git "refs/tags/$UPSTREAM_TAG"
+          fetched_sha="$(git rev-parse 'FETCH_HEAD^{commit}')"
+          if [[ "$fetched_sha" != "$UPSTREAM_SHA" ]]; then
+            echo "Upstream tag changed since release planning; refusing to merge." >&2
+            exit 1
+          fi
+          conflict_branch="automation/upstream-stable-$UPSTREAM_TAG"
+          open_pr="$(gh pr list --repo "$GITHUB_REPOSITORY" --base dev \
+            --head "$conflict_branch" --state open --json url --jq '.[0].url // empty')"
+          if [[ -n "$open_pr" ]]; then
+            echo "Waiting for conflict resolution: $open_pr" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! git merge --no-edit "$fetched_sha"; then
+            if [[ -z "$(git diff --name-only --diff-filter=U)" ]]; then
+              echo "Merge failed without file conflicts; refusing to publish." >&2
+              exit 1
+            fi
+            git diff --name-only --diff-filter=U > "$RUNNER_TEMP/upstream-conflicts.txt"
+            git merge --abort
+            git push origin "$fetched_sha:refs/heads/$conflict_branch"
+            python3 scripts/upstream_release.py conflict-pr \
+              --tag "$UPSTREAM_TAG" \
+              --conflicts "$RUNNER_TEMP/upstream-conflicts.txt" \
+              --approval-url "https://github.com/$GITHUB_REPOSITORY/issues/14" \
+              > "$RUNNER_TEMP/upstream-pr.md"
+            pr_url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base dev \
+              --head "$conflict_branch" --title "Merge upstream stable $UPSTREAM_TAG" \
+              --body-file "$RUNNER_TEMP/upstream-pr.md")"
+            echo "Conflict resolution PR: $pr_url" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git push origin HEAD:dev
+          echo "release_ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: prepare
+    if: needs.prepare.outputs.pending == 'true' && needs.prepare.outputs.release_ref != ''
+    uses: ./.github/workflows/subtitle-sync-beta-release.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.release_tag }}
+      release_title: ${{ needs.prepare.outputs.release_title }}
+      version_code: ${{ fromJSON(needs.prepare.outputs.version_code) }}
+      release_notes: ${{ needs.prepare.outputs.release_notes }}
+      release_ref: ${{ needs.prepare.outputs.release_ref }}
+    secrets: inherit

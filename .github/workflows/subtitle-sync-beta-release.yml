@@ -1,6 +1,23 @@
 name: Subtitle Sync Beta Release
 
 on:
+  workflow_call:
+    inputs:
+      release_tag:
+        required: true
+        type: string
+      release_title:
+        required: true
+        type: string
+      version_code:
+        required: true
+        type: number
+      release_notes:
+        required: true
+        type: string
+      release_ref:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       release_tag:
@@ -42,6 +59,30 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_ref || github.sha }}
+
+      - name: Validate release inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          VERSION_CODE: ${{ inputs.version_code }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta-subtitle-sync\.[0-9]+$ ]] || {
+            echo "Invalid subtitle beta tag." >&2
+            exit 1
+          }
+          [[ "$VERSION_CODE" =~ ^[0-9]+$ ]] || {
+            echo "versionCode must be an integer." >&2
+            exit 1
+          }
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG"; then
+            echo "Release tag already exists: $RELEASE_TAG" >&2
+            exit 1
+          else
+            status=$?
+            [[ "$status" == 2 ]] || exit "$status"
+          fi
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -67,6 +108,8 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.NUVIO_SUBTITLE_BETA_KEYSTORE_BASE64 }}
           KEY_ALIAS: ${{ secrets.NUVIO_SUBTITLE_BETA_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.NUVIO_SUBTITLE_BETA_KEY_PASSWORD }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          VERSION_CODE: ${{ inputs.version_code }}
         run: |
           if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
             echo "Permanent subtitle beta signing secrets are missing"
@@ -78,8 +121,8 @@ jobs:
             echo "NUVIO_BENCHMARK_KEY_ALIAS=$KEY_ALIAS"
             echo "NUVIO_BENCHMARK_KEY_PASSWORD=$KEY_PASSWORD"
             echo "NUVIO_BENCHMARK_STORE_PASSWORD=$KEY_PASSWORD"
-            echo "NUVIO_VERSION_NAME=${{ inputs.release_tag }}"
-            echo "NUVIO_VERSION_CODE=${{ inputs.version_code }}"
+            echo "NUVIO_VERSION_NAME=$RELEASE_TAG"
+            echo "NUVIO_VERSION_CODE=$VERSION_CODE"
             echo "NUVIO_GITHUB_OWNER=${{ github.repository_owner }}"
             echo "NUVIO_GITHUB_REPO=${{ github.event.repository.name }}"
             echo "GITHUB_ISSUE_OWNER=${{ github.repository_owner }}"
@@ -140,7 +183,7 @@ jobs:
           printf '%s\n' "$RELEASE_NOTES" > "$RUNNER_TEMP/release-notes.md"
           gh release create "$RELEASE_TAG" \
             app/build/outputs/apk/full/benchmark/*.apk \
-            --target "${{ github.sha }}" \
+            --target "$(git rev-parse HEAD)" \
             --title "$RELEASE_TITLE" \
             --notes-file "$RUNNER_TEMP/release-notes.md" \
             --prerelease
