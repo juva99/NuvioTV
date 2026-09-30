@@ -65,6 +65,9 @@ Android version code `2000 + N`; use that convention for manual releases too.
 Both release workflows serialize beta publication. To pause automation, disable
 **Follow Upstream Stable Releases** in Actions. It can also be run manually.
 The repository must allow GitHub Actions to create pull requests.
+Publication verifies that the built commit is still the release branch's tip.
+If the branch advances during a build, retry from its current commit rather than
+publishing an older revision.
 
 ## License
 
