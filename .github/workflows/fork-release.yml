@@ -81,9 +81,9 @@ jobs:
             exit 1
           }
           version_history="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100")"
-          next_code="$(printf '%s' "$version_history" | python3 -c '
+          next_code="$(printf '%s' "$version_history" | PYTHONPATH=scripts python3 -c '
           import json, sys
-          from scripts.upstream_release import next_version_code
+          from upstream_release import next_version_code
           releases = [release for page in json.load(sys.stdin) for release in page]
           print(next_version_code(releases))
           ')"
