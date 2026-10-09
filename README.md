@@ -53,7 +53,14 @@ changes. **Minimal Fork Release** then runs upstream AutoSync and focused
 player/updater tests, builds all five benchmark APKs, and checks their application
 ID, version code, permanent signing certificate, and Dolby Vision native library.
 Fork releases use the upstream stable tag and are published as stable releases,
-so the existing fork updater can find them without a special subtitle-sync channel.
+so migrated apps can use the standard updater without a special subtitle-sync channel.
+For old installed apps, the workflow also publishes compatibility prereleases
+under every historical `v0.7.17`, `v0.8.4`, and `v0.9.0` subtitle-sync tag prefix,
+including prefixes whose releases were deleted but whose Git tags remain.
+Each contains the same newly signed universal APK, not the old sync algorithm.
+Its installed version uses the upstream version, so subsequent updates use
+the standard fork updater. These entries do not import upstream beta releases.
+Builds predating the in-app updater still require a manual APK update.
 
 Android version codes continue above the old fork builds (`2024` was the last
 legacy release). The release notes record `nuvio-upstream-release` and
@@ -62,6 +69,13 @@ upgrade-safe numbering. Do not remove these markers. Manual releases must also
 use an increasing version code; the release workflow checks it and records it.
 The existing `NUVIO_SUBTITLE_BETA_*` signing secrets keep their names and key to
 allow installed fork APKs to upgrade without uninstalling.
+Compatibility entries publish before the stable release. If publication fails
+partway through, the next run retries with a newer version code; compatibility
+notes never mark the upstream stable release as completed.
+
+`TMDB_API_KEY` is supplied through a GitHub Actions secret and read from the build
+environment (or `local.properties` for local builds). Release publication stops
+if the secret is missing. Never commit the key or expose it to pull-request builds.
 
 Merge conflicts create one open resolution PR into `dev`; subsequent runs wait
 for it to be merged. Resolve conflicts without reintroducing the old sync stack.

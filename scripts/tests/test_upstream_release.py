@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from upstream_release import conflict_pr_body, next_version_code, plan_release
+from upstream_release import conflict_pr_body, legacy_release_tags, next_version_code, plan_release
 
 
 def release(tag, date, **overrides):
@@ -71,6 +71,42 @@ class UpstreamReleaseTests(unittest.TestCase):
                     body="<!-- nuvio-fork-version-code:2026 -->"),
         ]
         self.assertEqual(next_version_code(fork), 2027)
+
+    def test_legacy_bridge_preserves_every_historical_exact_prefix(self):
+        tags = legacy_release_tags([
+            "v0.7.17-beta-subtitle-sync.11",
+            "v0.7.17-beta-subtitle-sync.12",
+            "v0.8.4-beta-subtitle-sync.13",
+            "v0.9.0-beta-subtitle-sync.24",
+            "1.1.0", "v1.1.0-beta-other.2",
+        ], 2025)
+        self.assertEqual(tags, [
+            "v0.7.17-beta-subtitle-sync.25",
+            "v0.8.4-beta-subtitle-sync.25",
+            "v0.9.0-beta-subtitle-sync.25",
+        ])
+        for prefix in ("v0.7.17-beta-subtitle-sync.", "v0.8.4-beta-subtitle-sync."):
+            # Older clients accept only this exact prefix followed by an integer.
+            matches = [
+                int(tag.removeprefix(prefix)) for tag in tags if tag.startswith(prefix)
+            ]
+            self.assertEqual(matches, [25])
+
+    def test_partial_bridge_publication_does_not_complete_stable_release(self):
+        fork = [*self.fork, release(
+            "v0.7.17-beta-subtitle-sync.25", "2026-10-01T00:00:00Z",
+            prerelease=True, body="<!-- nuvio-fork-version-code:2025 -->",
+        )]
+        plan = self.plan([release("1.1.0", "2026-10-01T00:00:00Z")], fork)
+        self.assertEqual(plan["pending"], "true")
+        self.assertEqual(plan["release_tag"], "1.1.0")
+        self.assertEqual(plan["version_code"], "2026")
+
+    def test_legacy_bridge_rejects_missing_history_and_reused_sequence(self):
+        with self.assertRaisesRegex(ValueError, "No legacy tags"):
+            legacy_release_tags(["1.1.0"], 2025)
+        with self.assertRaisesRegex(ValueError, "advance"):
+            legacy_release_tags(["v0.9.0-beta-subtitle-sync.24"], 2024)
 
     def test_existing_unmarked_tag_fails_instead_of_reusing_release(self):
         with self.assertRaisesRegex(ValueError, "already exists"):

@@ -30,6 +30,17 @@ def next_version_code(fork_releases: list[dict]) -> int:
     return max(version_codes) + 1
 
 
+def legacy_release_tags(tags: list[str], version_code: int) -> list[str]:
+    legacy_tags = [tag for tag in tags if LEGACY_BETA_TAG.fullmatch(tag)]
+    if not legacy_tags:
+        raise ValueError("No legacy tags found to preserve installed updater channels")
+    sequence = version_code - 2000
+    if sequence <= max(int(tag.rsplit(".", 1)[1]) for tag in legacy_tags):
+        raise ValueError("Version code must advance all legacy updater channels")
+    prefixes = {tag.rsplit(".", 1)[0] for tag in legacy_tags}
+    return [f"{prefix}.{sequence}" for prefix in sorted(prefixes)]
+
+
 def plan_release(
     upstream_releases: list[dict],
     fork_releases: list[dict],
@@ -149,11 +160,23 @@ def main() -> None:
     planner.add_argument("--repository", required=True)
     planner.add_argument("--upstream", required=True)
     planner.add_argument("--baseline-tag", required=True)
+    legacy = commands.add_parser("legacy-tags")
+    legacy.add_argument("--repository", required=True)
+    legacy.add_argument("--version-code", required=True, type=int)
     pr = commands.add_parser("conflict-pr")
     pr.add_argument("--tag", required=True)
     pr.add_argument("--conflicts", required=True)
     pr.add_argument("--approval-url", required=True)
     args = parser.parse_args()
+    if args.command == "legacy-tags":
+        refs = github_api(
+            f"repos/{args.repository}/git/matching-refs/tags/", paginate=True
+        )
+        print("\n".join(legacy_release_tags(
+            [ref["ref"].removeprefix("refs/tags/") for ref in refs],
+            args.version_code,
+        )))
+        return
     if args.command == "conflict-pr":
         print(conflict_pr_body(
             (Path(".github") / "PULL_REQUEST_TEMPLATE.md").read_text(encoding="utf-8"),

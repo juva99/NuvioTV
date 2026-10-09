@@ -6,6 +6,16 @@ import org.junit.Test
 
 class VersionUtilsTest {
     @Test
+    fun `legacy bridge upgrades old clients but not migrated upstream version`() {
+        for (core in listOf("0.7.17", "0.8.4", "0.9.0")) {
+            val bridge = "v$core-beta-subtitle-sync.25"
+            assertTrue(VersionUtils.isRemoteNewer(bridge, "v$core-beta-subtitle-sync.12"))
+            assertFalse(VersionUtils.isRemoteNewer(bridge, "1.1.0"))
+        }
+        assertTrue(VersionUtils.isRemoteNewer("1.1.0", "v0.9.0-beta-subtitle-sync.24"))
+    }
+
+    @Test
     fun `stable release is newer than its prerelease`() {
         assertTrue(VersionUtils.isRemoteNewer("1.1.0", "1.1.0-rc.2"))
     }

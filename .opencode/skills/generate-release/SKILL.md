@@ -23,6 +23,7 @@ Use this skill for release work in this repository. It is intentionally safe by 
 3. Confirm `gh auth status` succeeds and the remote repository is the intended repository.
 4. Inspect existing tags and releases before choosing a version or tag.
 5. Never print, read, or commit signing keys, GitHub tokens, local properties, or secret values.
+6. Confirm the `TMDB_API_KEY` Actions secret exists by name; never print its value. Fork release builds refuse to publish without it.
 
 Use PowerShell on Windows. Prefer these commands:
 
@@ -60,6 +61,8 @@ gh workflow run fork-release.yml `
 ```
 
 The workflow checks out the selected ref, runs upstream AutoSync and retained-fix tests, builds five benchmark APKs, verifies their package/version/signature/native library, and publishes a stable fork release. Preserve the `nuvio-upstream-release` marker when following an upstream release; the workflow records `nuvio-fork-version-code`. Keep the legacy `NUVIO_SUBTITLE_BETA_*` signing secrets and `com.nuvio.tv.debug` package for installed APK compatibility. Do not bypass the workflow with a manual release unless explicitly approved.
+
+Before the stable release, the workflow publishes the same universal APK in compatibility prereleases for every historical subtitle-sync prefix, discovered from Git tags even when older releases were deleted. Do not remove these entries: old clients require exact prefixes. Compatibility notes must not contain the `nuvio-upstream-release` completion marker; a partial failure retries with a higher code before completing the stable release.
 
 ## Standard Android Release
 
