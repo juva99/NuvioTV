@@ -86,6 +86,10 @@ advances before it finishes.
 
 To pause automation, disable **Follow Upstream Stable Releases** in Actions.
 It can also be run manually. The repository must allow Actions to create PRs.
+An explicitly requested manual release can publish a numbered upstream beta or
+release candidate through **Minimal Fork Release**, with the correct prerelease
+flag and the same legacy upgrade entries. This does not enable automatic beta
+tracking.
 
 ## License
 

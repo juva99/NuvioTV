@@ -8,10 +8,18 @@ import subprocess
 import uuid
 from pathlib import Path
 
+from release_beta import is_github_prerelease
+
 
 LEGACY_BETA_TAG = re.compile(r"v?[0-9]+\.[0-9]+\.[0-9]+-beta-subtitle-sync\.([0-9]+)")
 STABLE_TAG = re.compile(r"v?[0-9]+\.[0-9]+\.[0-9]+")
 VERSION_CODE_MARKER = re.compile(r"<!-- nuvio-fork-version-code:([0-9]+) -->")
+
+
+def release_channel(tag: str) -> str:
+    if not re.fullmatch(r"v?[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|beta|rc)\.[0-9]+)?", tag):
+        raise ValueError(f"Invalid upstream release tag: {tag}")
+    return "true" if is_github_prerelease(tag) else "false"
 
 
 def next_version_code(fork_releases: list[dict]) -> int:
@@ -163,11 +171,16 @@ def main() -> None:
     legacy = commands.add_parser("legacy-tags")
     legacy.add_argument("--repository", required=True)
     legacy.add_argument("--version-code", required=True, type=int)
+    channel = commands.add_parser("release-channel")
+    channel.add_argument("--tag", required=True)
     pr = commands.add_parser("conflict-pr")
     pr.add_argument("--tag", required=True)
     pr.add_argument("--conflicts", required=True)
     pr.add_argument("--approval-url", required=True)
     args = parser.parse_args()
+    if args.command == "release-channel":
+        print(release_channel(args.tag))
+        return
     if args.command == "legacy-tags":
         refs = github_api(
             f"repos/{args.repository}/git/matching-refs/tags/", paginate=True

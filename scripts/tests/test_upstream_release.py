@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from upstream_release import conflict_pr_body, legacy_release_tags, next_version_code, plan_release
+from upstream_release import conflict_pr_body, legacy_release_tags, next_version_code, plan_release, release_channel
 
 
 def release(tag, date, **overrides):
@@ -15,6 +15,16 @@ def release(tag, date, **overrides):
 
 
 class UpstreamReleaseTests(unittest.TestCase):
+    def test_explicit_manual_beta_and_stable_use_correct_github_channels(self):
+        self.assertEqual(release_channel("1.1.0-beta.5"), "true")
+        self.assertEqual(release_channel("v1.1.0-rc.2"), "true")
+        self.assertEqual(release_channel("1.1.0"), "false")
+
+    def test_manual_release_rejects_invalid_or_unrecognized_tags(self):
+        for tag in ("latest", "1.1.0-beta", "1.1.0-dev.5", "1.1.0\n--draft"):
+            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, "Invalid upstream"):
+                release_channel(tag)
+
     def setUp(self):
         self.baseline = release("1.0.0", "2026-09-19T00:00:00Z")
         self.fork = [release("v0.9.0-beta-subtitle-sync.24", "2026-09-29T00:00:00Z")]

@@ -31,18 +31,18 @@ Use PowerShell on Windows. Prefer these commands:
 git status --short --branch
 ```
 
-## Fork Stable Release
+## Fork Release
 
 The dispatch inputs are required:
 
-- `release_tag`: use the upstream stable tag, for example `1.1.0`.
+- `release_tag`: use a published upstream tag, for example `1.1.0` or, for an explicitly requested manual beta, `1.1.0-beta.5`.
 - `release_title`: human-readable GitHub release title.
 - `version_code`: integer greater than the last published Android version code.
 - `release_notes`: Markdown release notes.
 
 Before dispatching:
 
-1. Find the latest fork release and upstream stable tag. Do not import unreleased `dev` commits or beta releases.
+1. Find the latest fork release and published upstream tag. Do not import unreleased `dev` commits. Automatic tracking is stable-only; an explicitly requested manual release may use the latest numbered beta/RC tag.
 2. Read the `nuvio-fork-version-code` release-note marker. Legacy subtitle-sync builds use `2000 + N`; the next fork code must exceed all previous codes.
 3. Verify the selected tag does not exist on the fork remote. A local upstream tag with the same name is expected.
 4. Summarize user-visible changes from the commits since the previous release. Do not expose secrets, tokens, subtitle URLs with credentials, or internal implementation noise.
@@ -60,9 +60,9 @@ gh workflow run fork-release.yml `
   -f release_notes="$(Get-Content release-notes.md -Raw)"
 ```
 
-The workflow checks out the selected ref, runs upstream AutoSync and retained-fix tests, builds five benchmark APKs, verifies their package/version/signature/native library, and publishes a stable fork release. Preserve the `nuvio-upstream-release` marker when following an upstream release; the workflow records `nuvio-fork-version-code`. Keep the legacy `NUVIO_SUBTITLE_BETA_*` signing secrets and `com.nuvio.tv.debug` package for installed APK compatibility. Do not bypass the workflow with a manual release unless explicitly approved.
+The workflow checks out the selected ref, runs upstream AutoSync and retained-fix tests, builds five benchmark APKs, verifies their package/version/signature/native library, and publishes a fork release with the appropriate stable/prerelease flag. Preserve the `nuvio-upstream-release` marker when following an upstream release; the workflow records `nuvio-fork-version-code`. Keep the legacy `NUVIO_SUBTITLE_BETA_*` signing secrets and `com.nuvio.tv.debug` package for installed APK compatibility. Do not bypass the workflow with a manual release unless explicitly approved.
 
-Before the stable release, the workflow publishes the same universal APK in compatibility prereleases for every historical subtitle-sync prefix, discovered from Git tags even when older releases were deleted. Do not remove these entries: old clients require exact prefixes. Compatibility notes must not contain the `nuvio-upstream-release` completion marker; a partial failure retries with a higher code before completing the stable release.
+Before the primary release, the workflow publishes the same universal APK in compatibility prereleases for every historical subtitle-sync prefix, discovered from Git tags even when older releases were deleted. Do not remove these entries: old clients require exact prefixes. Compatibility notes must not contain the `nuvio-upstream-release` completion marker; a partial failure retries with a higher code before completing the primary release.
 
 ## Standard Android Release
 
