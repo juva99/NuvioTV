@@ -115,11 +115,6 @@ data class PlayerUiState(
     val subtitleAutoSyncError: String? = null,
     val subtitleAutoSyncLoading: Boolean = false,
     val subtitleAutoSyncLoadedTrackKey: String? = null,
-    val automaticSubtitleSyncRunning: Boolean = false,
-    val automaticSubtitleSyncAvailable: Boolean = false,
-    val automaticSubtitleSyncMessage: String? = null,
-    val automaticSubtitleSyncReferenceTrackCount: Int = 0,
-    val automaticSubtitleSyncCapturedCueCount: Int = 0,
     val showSpeedDialog: Boolean = false,
     val showMoreDialog: Boolean = false,
     // Subtitle style settings
@@ -231,7 +226,8 @@ data class PlayerUiState(
     val torrentBufferingProgress: Float = 0f,
     // When true, suppress all torrent stats text (buffer, seeds, peers, speed)
     // from loading overlay, rebuffering indicator, and corner overlay.
-    val hideTorrentStats: Boolean = true
+    val hideTorrentStats: Boolean = true,
+    val isLive: Boolean = false
 )
 
 data class PlaybackTimelineState(
@@ -304,7 +300,6 @@ sealed class PlayerEvent {
     data object OnCaptureSubtitleAutoSyncTime : PlayerEvent()
     data class OnApplySubtitleAutoSyncCue(val cueStartTimeMs: Long) : PlayerEvent()
     data object OnReloadSubtitleAutoSyncCues : PlayerEvent()
-    data object OnAutomaticallySyncSubtitle : PlayerEvent()
     data object OnShowSubtitleDelayOverlay : PlayerEvent()
     data object OnHideSubtitleDelayOverlay : PlayerEvent()
     data class OnAdjustSubtitleDelay(val deltaMs: Int, val showOverlay: Boolean = true) : PlayerEvent()

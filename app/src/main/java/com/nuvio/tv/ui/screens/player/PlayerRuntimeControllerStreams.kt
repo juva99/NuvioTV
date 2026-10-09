@@ -1458,6 +1458,7 @@ internal fun PlayerRuntimeController.switchToEpisodeStream(
     currentEpisodeTitle = targetVideo?.title ?: _uiState.value.episodeStreamsTitle ?: currentEpisodeTitle
     // Until the new file loads, MPV keeps reporting the old one, which is often at its end.
     hasRenderedFirstFrame = false
+    hasObservedFreshPlaybackForCurrentStream = false
     mpvView?.markMediaRequested(playbackUrl)
     endDetectionArmed = false
     mpvEofSeenClear = false
@@ -1695,14 +1696,43 @@ internal suspend fun PlayerRuntimeController.resolveDirectDebridStreamIfNeeded(
     }
 }
 
+/**
+ * Starts fetching addon streams for the next episode in the background.
+ * Results are stored in [StreamSearchSessionCache] so that the subsequent
+ * [playNextEpisode] call hits the cache and plays instantly.
+ */
+internal fun PlayerRuntimeController.preloadNextEpisodeSources() {
+    if (nextEpisodePreloadTriggered) return
+    val nextVideo = nextEpisodeVideo ?: return
+    val type = contentType ?: return
+    val nextInfo = _uiState.value.nextEpisode ?: return
+    if (!nextInfo.hasAired) return
+
+    nextEpisodePreloadTriggered = true
+    nextEpisodePreloadJob?.cancel()
+    nextEpisodePreloadJob = scope.launch {
+        Log.d(PlayerRuntimeController.TAG, "Preloading sources for next episode: S${nextVideo.season}E${nextVideo.episode}")
+        streamRepository.getStreamsFromAllAddons(
+            type = type,
+            videoId = nextVideo.id,
+            season = nextVideo.season,
+            episode = nextVideo.episode
+        ).collect { /* results cached by StreamSearchSessionCache */ }
+    }
+}
+
+internal fun PlayerRuntimeController.cancelNextEpisodePreload() {
+    nextEpisodePreloadJob?.cancel()
+    nextEpisodePreloadJob = null
+    nextEpisodePreloadTriggered = false
+}
+
 internal fun PlayerRuntimeController.playNextEpisode(userInitiated: Boolean = false) {
     val nextVideo = nextEpisodeVideo ?: return
     val type = contentType ?: return
 
-    // Defense in depth: never auto-advance while the current stream is still
-    // loading. Any completion/near-end signal seen in that window comes from the
-    // episode we just left, and acting on it skips an extra episode.
     if (!userInitiated && !hasObservedFreshPlaybackForCurrentStream) return
+    nextEpisodePreloadTriggered = false
 
     val state = _uiState.value
     val nextInfo = state.nextEpisode ?: return

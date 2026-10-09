@@ -1,9 +1,6 @@
 package com.nuvio.tv.ui.screens.settings
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.res.stringResource
@@ -14,7 +11,6 @@ import com.nuvio.tv.data.local.LibassRenderType
 import com.nuvio.tv.data.local.PlayerPreference
 import com.nuvio.tv.data.local.PlayerSettings
 import com.nuvio.tv.data.local.SubtitleLanguageOption
-import com.nuvio.tv.ui.screens.player.autosync.AutoSyncPreferences
 import com.nuvio.tv.data.local.SubtitleStyleSettings
 import com.nuvio.tv.data.local.displayName
 
@@ -72,6 +68,8 @@ internal fun PlaybackSubtitlesSection(
         enabled = languageSelectionEnabled,
         onClick = { onOpenDialog(PlaybackDialog.SECONDARY_SUBTITLE_LANGUAGE) }
     )
+    autoSyncSettingsItems(enabled = enabled) // AutoSync hook
+
     SettingsToggleRow(
         title = stringResource(R.string.sub_use_forced_subtitles),
         subtitle = stringResource(R.string.sub_use_forced_subtitles_desc),
@@ -152,16 +150,6 @@ internal fun PlaybackSubtitlesSection(
     }
 
     SettingsSectionLabel(text = stringResource(R.string.sub_advanced_section))
-    val context = LocalContext.current
-    AutoSyncPreferences.ensureLoaded(context)
-    val aggressive by AutoSyncPreferences.aggressiveMode.collectAsStateWithLifecycle()
-    SettingsToggleRow(
-        title = stringResource(R.string.subtitle_aggressive_sync),
-        subtitle = stringResource(R.string.subtitle_aggressive_sync_description),
-        checked = aggressive,
-        onToggle = { AutoSyncPreferences.setAggressiveMode(context, !aggressive) },
-        enabled = enabled
-    )
     SettingsToggleRow(
         title = stringResource(R.string.sub_libass),
         subtitle = stringResource(R.string.sub_libass_sub),

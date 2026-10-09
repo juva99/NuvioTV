@@ -156,10 +156,6 @@ internal fun PlayerRuntimeController.resetPostPlayStateAfterPlaybackEnded() {
     resetPostPlayOverlayState(clearEpisode = false)
 }
 
-/**
- * Playback is treated as finished once the position reaches the last
- * [PLAYBACK_END_WINDOW_MS] of the timeline.
- */
 internal const val PLAYBACK_END_WINDOW_MS = 500L
 
 internal fun isPositionAtEndOfPlayback(positionMs: Long, durationMs: Long): Boolean =
@@ -174,11 +170,6 @@ internal fun shouldResetPostPlayStateAfterPlaybackEnded(
     hasInFlightNextEpisodeAutoPlay: Boolean,
     hasObservedFreshPlaybackForCurrentStream: Boolean = true
 ): Boolean {
-    // A completion signal that arrives before the current stream has reported any
-    // position clearly before its end belongs to the previous episode (a stale tick
-    // emitted while an auto-play switch is still loading). Acting on it would
-    // auto-play again and skip an extra episode, which is easy to hit on short
-    // episodes where the near-end trigger and the natural end are only seconds apart.
     if (!hasObservedFreshPlaybackForCurrentStream) return false
     if (state.postPlayMode?.blocksNaturalCompletion() == true) return false
     if (hasInFlightNextEpisodeAutoPlay) return false
@@ -226,11 +217,6 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                     )
                     val playingNow = view.isPlayingNow()
                     val cacheBuffering = view.isPausedForCacheNow() || view.isCoreIdleNow()
-                    // MPV keeps reporting the previous file's position/duration for a
-                    // short window after a stream switch, so a sample sitting at the
-                    // end of the timeline can be a leftover from the episode we just
-                    // finished. Only trust "the stream is playing" once we have seen a
-                    // position that is clearly before the end of the current file.
                     if (isFreshPlaybackSample(positionMs = pos, durationMs = playerDuration)) {
                         hasObservedFreshPlaybackForCurrentStream = true
                     }
@@ -241,6 +227,8 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                                 (pos > 0L || (playingNow && !cacheBuffering && playerDuration > 0L))
                             if (firstFrameReady) {
                                 hasRenderedFirstFrame = true
+                                resetMpvStartupWatchdog()
+                                scheduleMpvStableProgressReset()
                                 val clickToFirstFrameMs = launchStartedAtElapsedMs
                                     ?.let { (android.os.SystemClock.elapsedRealtime() - it).coerceAtLeast(0L) }
                                     ?: -1L
@@ -258,6 +246,7 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                                 }
                             }
                         }
+                    maybeRunMpvStartupWatchdog(view)
                     if (playerDuration > lastKnownDuration) {
                         lastKnownDuration = playerDuration
                     }
@@ -280,7 +269,7 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                     val eofNow = view.isEofReached()
                     if (!eofNow) mpvEofSeenClear = true
                     val mpvEofReached = mpvEofSeenClear && eofNow
-                    val naturalEnded = freshPlayback && !view.isLiveStreamNow() && (nearEnd || mpvEofReached) && shouldTreatAsNaturalPlaybackCompletion(
+                    val naturalEnded = !view.isLiveStreamNow() && (nearEnd || mpvEofReached) && shouldTreatAsNaturalPlaybackCompletion(
                         hasRenderedFirstFrame = firstFrameReady,
                         hasFatalError = !_uiState.value.error.isNullOrBlank(),
                         durationMs = effectiveDuration,
@@ -322,9 +311,6 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                 if (playerDuration > lastKnownDuration) {
                     lastKnownDuration = playerDuration
                 }
-                // A sample sitting at the end of the timeline can still belong to
-                // the episode we just finished while the next stream is loading, so
-                // only positions clearly before the end prove the new stream runs.
                 if (isFreshPlaybackSample(positionMs = pos, durationMs = playerDuration)) {
                     hasObservedFreshPlaybackForCurrentStream = true
                 }
@@ -394,16 +380,7 @@ internal fun PlayerRuntimeController.startProgressUpdates() {
                         if (NuvioExoPlayerPerformanceHelper.shouldLogMemoryFootprint()) {
                             val defaultAllocator = _loadControl?.allocator as? androidx.media3.exoplayer.upstream.DefaultAllocator
                             val totalFootprintBytes = defaultAllocator?.let { allocator ->
-                                try {
-                                    allocator.memoryFootprint.toLong()
-                                } catch (_: Throwable) {
-                                    try {
-                                        val method = allocator.javaClass.getMethod("getMemoryFootprint")
-                                        (method.invoke(allocator) as? Number)?.toLong() ?: 0L
-                                    } catch (_: Throwable) {
-                                        0L
-                                    }
-                                }
+                                runCatching { allocator.memoryFootprint.toLong() }.getOrDefault(0L)
                             } ?: 0L
                             val totalActiveBytes = defaultAllocator?.totalBytesAllocated?.toLong() ?: 0L
                             val footprintMb = totalFootprintBytes / (1024 * 1024)
@@ -714,7 +691,6 @@ internal fun PlayerRuntimeController.handleNaturalPlaybackEnded() {
         Log.i(
             PlayerRuntimeController.TAG,
             "Ignoring non-natural ENDED: firstFrame=$hasRenderedFirstFrame " +
-                "freshPlayback=$hasObservedFreshPlaybackForCurrentStream " +
                 "error=$hasFatalError durationMs=$duration positionMs=$position"
         )
         // Prevent PlayerScreen from dispatching onPlaybackEnded / next-episode navigation.
@@ -1138,8 +1114,7 @@ internal fun PlayerRuntimeController.setSubtitleDelayMs(targetMs: Int, showOverl
         _uiState.update {
             it.copy(
                 subtitleDelayMs = newDelayMs,
-                showSubtitleDelayOverlay = false,
-                showControls = true
+                showSubtitleDelayOverlay = false
             )
         }
     }
@@ -1375,6 +1350,7 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
             pendingAddonSubtitleTrackId = null
             pendingAudioSelectionAfterSubtitleRefresh = null
             resetSubtitleAutoSyncState()
+            cancelAutomaticSubtitleSync() // AutoSync hook
             rememberInternalSubtitleSelection(event.index)
             selectSubtitleTrack(event.index)
             _uiState.update {
@@ -1398,6 +1374,7 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
             pendingAddonSubtitleTrackId = null
             pendingAudioSelectionAfterSubtitleRefresh = null
             resetSubtitleAutoSyncState()
+            cancelAutomaticSubtitleSync() // AutoSync hook
             rememberSubtitleDisabled()
             disableSubtitles()
             _uiState.update {
@@ -1420,6 +1397,7 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
             autoSubtitleSelected = true
             rememberAddonSubtitleSelection(event.subtitle)
             selectAddonSubtitle(event.subtitle)
+            runSelectedAutomaticSubtitleSync(event.subtitle) // AutoSync hook
             _uiState.update {
                 it.copy(
                     showSubtitleOverlay = true,
@@ -1528,9 +1506,6 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
         }
         PlayerEvent.OnReloadSubtitleAutoSyncCues -> {
             reloadSubtitleAutoSyncCues()
-        }
-        PlayerEvent.OnAutomaticallySyncSubtitle -> {
-            automaticallySyncSubtitle()
         }
         PlayerEvent.OnShowSubtitleDelayOverlay -> {
             showSubtitleDelayOverlay()
@@ -1651,6 +1626,7 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
         }
         PlayerEvent.OnRetry -> {
             hasRenderedFirstFrame = false
+            hasObservedFreshPlaybackForCurrentStream = false
             endDetectionArmed = false
             mpvEofSeenClear = false
             hasRetriedCurrentStreamAfter416 = false

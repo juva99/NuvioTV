@@ -60,7 +60,7 @@ class UpdateViewModel @Inject constructor(
             if (UpdateBannerPolicy.shouldCheckAutomatically(
                     bannerEnabled = enabled,
                     updateFeatureEnabled = BuildConfig.IN_APP_UPDATE_DIALOG_ENABLED
-                ) && !BuildConfig.IS_DEBUG_BUILD
+                )
             ) {
                 checkForUpdates(force = false, showNoUpdateFeedback = false)
             }
@@ -192,7 +192,7 @@ class UpdateViewModel @Inject constructor(
             if (changed && UpdateBannerPolicy.shouldCheckAutomatically(
                     bannerEnabled = enabled,
                     updateFeatureEnabled = BuildConfig.IN_APP_UPDATE_DIALOG_ENABLED
-                ) && !BuildConfig.IS_DEBUG_BUILD
+                )
             ) {
                 checkForUpdates(force = false, showNoUpdateFeedback = false)
             }

@@ -40,9 +40,7 @@ class TrailerServiceYouTubeSessionCacheTest {
         val extractor = mockk<InAppYouTubeExtractor>()
         val tmdbSettingsDataStore = mockk<TmdbSettingsDataStore>()
         val tmdbService = mockk<TmdbService>()
-        every { tmdbSettingsDataStore.settings } returns MutableStateFlow(
-            TmdbSettings(language = "en")
-        )
+        every { tmdbSettingsDataStore.settings } returns MutableStateFlow(TmdbSettings(language = "en"))
         every { tmdbService.apiKey() } returns "tmdb-key"
         val service = TrailerService(trailerApi, tmdbApi, extractor, tmdbSettingsDataStore, tmdbService)
 
@@ -72,9 +70,7 @@ class TrailerServiceYouTubeSessionCacheTest {
         val extractor = mockk<InAppYouTubeExtractor>()
         val tmdbSettingsDataStore = mockk<TmdbSettingsDataStore>()
         val tmdbService = mockk<TmdbService>()
-        every { tmdbSettingsDataStore.settings } returns MutableStateFlow(
-            TmdbSettings(language = "en")
-        )
+        every { tmdbSettingsDataStore.settings } returns MutableStateFlow(TmdbSettings(language = "en"))
         every { tmdbService.apiKey() } returns "tmdb-key"
         val service = TrailerService(trailerApi, tmdbApi, extractor, tmdbSettingsDataStore, tmdbService)
 

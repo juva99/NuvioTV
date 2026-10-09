@@ -41,7 +41,7 @@ jobs:
           python3 scripts/upstream_release.py plan \
             --repository "$GITHUB_REPOSITORY" \
             --upstream NuvioMedia/NuvioTV \
-            --baseline-tag 1.0.0
+            --baseline-tag 1.1.0-beta.5
 
       - name: Merge upstream release without discarding fork changes
         if: steps.plan.outputs.pending == 'true'
@@ -91,7 +91,7 @@ jobs:
   release:
     needs: prepare
     if: needs.prepare.outputs.pending == 'true' && needs.prepare.outputs.release_ref != ''
-    uses: ./.github/workflows/subtitle-sync-beta-release.yml
+    uses: ./.github/workflows/fork-release.yml
     with:
       release_tag: ${{ needs.prepare.outputs.release_tag }}
       release_title: ${{ needs.prepare.outputs.release_title }}

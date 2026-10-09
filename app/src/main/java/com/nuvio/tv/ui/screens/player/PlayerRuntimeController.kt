@@ -38,7 +38,6 @@ import com.nuvio.tv.data.local.StreamAutoPlayMode
 import com.nuvio.tv.data.repository.ParentalGuideRepository
 import com.nuvio.tv.data.repository.PlaybackIssueErrorInput
 import com.nuvio.tv.data.repository.PlaybackIssueReportRepository
-import com.nuvio.tv.data.repository.GitHubIssueReportRepository
 import com.nuvio.tv.data.repository.SkipIntroRepository
 import com.nuvio.tv.data.repository.SkipInterval
 import com.nuvio.tv.data.repository.EpisodeMappingEntry
@@ -63,6 +62,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import com.nuvio.tv.core.util.withAppLocale
 import java.lang.ref.WeakReference
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 class PlayerRuntimeController(
@@ -100,7 +100,6 @@ class PlayerRuntimeController(
     internal val cloudPlaybackSessionStore: CloudLibraryPlaybackSessionStore,
     internal val streamBadgePresentation: com.nuvio.tv.core.streams.StreamBadgePresentation,
     internal val playbackIssueReportRepository: PlaybackIssueReportRepository,
-    internal val githubIssueReportRepository: GitHubIssueReportRepository,
     internal val tvRecommendationManager: com.nuvio.tv.core.recommendations.TvRecommendationManager,
     internal val profileId: Int,
     savedStateHandle: SavedStateHandle,
@@ -191,11 +190,6 @@ class PlayerRuntimeController(
     internal val cloudSessionToken: String? = navigationArgs.cloudSessionToken
     internal val mediaSourceFactory = PlayerMediaSourceFactory(context.applicationContext)
 
-    // Resolved per sample so it follows the player across rebuilds.
-    private val bufferedAheadProvider: () -> Long = {
-        _exoPlayer?.let { player -> player.bufferedPosition - player.currentPosition } ?: -1L
-    }
-
     // The file rate is the only one every container reports, so the playhead is placed in the
     // file by how far through it is rather than by any declared bitrate.
     private val vodCachePlayheadBytesProvider: () -> Long = {
@@ -209,7 +203,6 @@ class PlayerRuntimeController(
     }
 
     init {
-        PlayerMemoryReporter.bufferedAheadProvider = bufferedAheadProvider
         PlayerMediaSourceFactory.vodCachePlayheadBytesProvider = vodCachePlayheadBytesProvider
     }
 
@@ -274,7 +267,6 @@ class PlayerRuntimeController(
             }
         }
         mediaSourceFactory.logVodCacheStats()
-        PlayerMemoryReporter.stopSampling(context)
         releaseProcessWideReferences()
         mediaSourceFactory.evictCachedSession()
         releasePlayer()
@@ -283,9 +275,6 @@ class PlayerRuntimeController(
     // These are process wide, so without this the exited player stays reachable until the next one
     // replaces them; the identity checks keep a player that has already started from losing its own.
     private fun releaseProcessWideReferences() {
-        if (PlayerMemoryReporter.bufferedAheadProvider === bufferedAheadProvider) {
-            PlayerMemoryReporter.bufferedAheadProvider = null
-        }
         if (PlayerMediaSourceFactory.vodCachePlayheadBytesProvider === vodCachePlayheadBytesProvider) {
             PlayerMediaSourceFactory.vodCachePlayheadBytesProvider = null
         }
@@ -350,6 +339,9 @@ class PlayerRuntimeController(
         isLive: Boolean = _playbackTimeline.value.isLive,
         watchedDurationMs: Long = _playbackTimeline.value.watchedDurationMs
     ) {
+        if (_uiState.value.isLive != isLive) {
+            _uiState.update { it.copy(isLive = isLive) }
+        }
         _playbackTimeline.update {
             it.copy(
                 currentPosition = currentPosition.coerceAtLeast(0L),
@@ -395,6 +387,9 @@ class PlayerRuntimeController(
         livePlaybackLatched = false
         liveWatchClock.reset()
         pendingPreviewSeekPosition = null
+        if (_uiState.value.isLive) {
+            _uiState.update { it.copy(isLive = false) }
+        }
         _playbackTimeline.value = PlaybackTimelineState()
     }
 
@@ -422,25 +417,12 @@ class PlayerRuntimeController(
     internal var hidePlayerEngineSwitchInfoJob: Job? = null
     internal var hideSubtitleDelayOverlayJob: Job? = null
     internal var subtitleAutoSyncLoadJob: Job? = null
-    internal var automaticSubtitleSyncJob: Job? = null
-    internal var activeSubtitleReferenceScanner: SubtitleReferenceScanner? = null
-    internal val subtitleReferenceCueStore: SubtitleReferenceCueStore by lazy {
-        SubtitleReferenceCueStore { status ->
-            _uiState.update {
-                it.copy(
-                    automaticSubtitleSyncAvailable = status.isAvailable,
-                    automaticSubtitleSyncReferenceTrackCount = status.eligibleTrackCount,
-                    automaticSubtitleSyncCapturedCueCount = status.capturedCueCount
-                )
-            }
-        }
-    }
-    internal val subtitleSyncFileStore by lazy { SubtitleSyncFileStore(context) }
-    internal var synchronizedSubtitleOverride: SynchronizedSubtitleOverride? = null
+    internal var automaticSubtitleSyncJob: Job? = null // AutoSync hook
     /** ExoPlayer sidecar path: external addon cues without setMediaSource (preserves buffer). */
     internal var sidecarSubtitleJob: Job? = null
+    internal var sidecarGenerationCounter: Long = 0L // AutoSync hook
+    internal var activeSidecarGeneration: Long = 0L // AutoSync hook
     internal var activeSidecarSubtitleKey: String? = null
-    internal var sidecarGeneration: Long = 0L
     internal var sidecarTimedCues: List<androidx.media3.extractor.text.CuesWithTiming> = emptyList()
     internal var lastSidecarCueSignature: Long? = null
     internal var exoSubtitleViewRef: WeakReference<androidx.media3.ui.SubtitleView>? = null
@@ -485,12 +467,7 @@ class PlayerRuntimeController(
 
     internal var playbackStartedForParentalGuide = false
     internal var hasRenderedFirstFrame = false
-    /**
-     * True once the currently loaded stream has reported a playback position that
-     * is clearly before its end. Until then, position/duration samples may still
-     * belong to the previous stream (MPV keeps serving the old file's values while
-     * the next episode loads), so completion-driven logic must not act on them.
-     */
+    // MPV can keep reporting the previous stream's position while the next one loads.
     internal var hasObservedFreshPlaybackForCurrentStream = false
     // Prevent the previous stream's end from completing the new stream.
     internal var endDetectionArmed = false
@@ -517,6 +494,8 @@ class PlayerRuntimeController(
     internal var metaCountry: String? = null
     internal var metaFetchJob: Job? = null
     internal var nextEpisodeVideo: Video? = null
+    internal var nextEpisodePreloadJob: Job? = null
+    internal var nextEpisodePreloadTriggered: Boolean = false
     internal var userPausedManually = false
 
     internal var isInBackground: Boolean = false
@@ -560,6 +539,8 @@ class PlayerRuntimeController(
     internal var streamAutoPlayModeSetting: StreamAutoPlayMode = StreamAutoPlayMode.MANUAL
     internal var streamAutoPlayNextEpisodeEnabledSetting: Boolean = false
     internal var streamAutoPlayPreferBingeGroupForNextEpisodeSetting: Boolean = false
+    internal var streamAutoPlayTimeoutSecondsSetting: Int = 10
+    internal var preloadNextEpisodeSourcesSetting: Boolean = false
     internal var nextEpisodeThresholdModeSetting: NextEpisodeThresholdMode = NextEpisodeThresholdMode.PERCENTAGE
     internal var nextEpisodeThresholdPercentSetting: Float = 98f
     internal var nextEpisodeThresholdMinutesBeforeEndSetting: Float = 2f
@@ -604,6 +585,19 @@ class PlayerRuntimeController(
     internal var mpvTrackRefreshJob: Job? = null
     internal var mpvTrackRefreshInProgress: Boolean = false
     internal var pendingMpvHardRestartOnNextAttach: Boolean = false
+    internal var mpvEventRelay: MpvEventRelay? = null
+    internal var mpvEventRelayEpoch: Long = 0
+    internal var mpvSurfaceWaitTicks: Int = 0
+    internal var mpvIdleActiveTicks: Int = 0
+    internal var mpvStartupStallTicks: Int = 0
+    internal var mpvStartupAbsoluteTicks: Int = 0
+    internal var mpvLastDemuxerCacheSec: Double = 0.0
+    internal var mpvActivePlaylistEntryId: Long? = null
+    internal var mpvLastFileError: String? = null
+    internal var mpvErrorRecoveryArmed: Boolean = false
+    internal var mpvStableProgressResetJob: Job? = null
+    @Volatile internal var mpvLastErrorLogLine: String? = null
+    internal val mpvErrorHandlingInProgress = AtomicBoolean(false)
     internal var delayMpvResumeSeekUntilVideoTrack: Boolean = false
     internal var mpvDelayStartAfterAfrSwitch: Boolean = false
     internal var pauseOverlayJob: Job? = null
@@ -774,10 +768,6 @@ class PlayerRuntimeController(
         sourceStreamsScope = null
         episodeStreamsScope?.cancel()
         episodeStreamsScope = null
-        automaticSubtitleSyncJob?.cancel()
-        activeSubtitleReferenceScanner?.close()
-        activeSubtitleReferenceScanner = null
-        subtitleSyncFileStore.clear()
     }
 
 }

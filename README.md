@@ -27,47 +27,51 @@ cd NuvioTV
 
 Nuvio TV is built with Kotlin, Jetpack Compose, TV Material 3, and Media3. Development requires Android Studio, a JDK, and the Android SDK.
 
-## Subtitle synchronization
+## Minimal fork
 
-Select an add-on SRT or WebVTT subtitle in the player and use **Automatic sync**
-in the subtitle timing dialog. Matching now uses the AutoSync V2 delay-first,
-activity-alignment, and grouped-cue retiming engine adapted from
-[DavidVamaiotu/NuvioTV](https://github.com/DavidVamaiotu/NuvioTV).
-The existing player controls, status messages, and synchronized subtitle
-playback remain in place. When no usable indexed reference is available, the
-existing reference scanner is retained as a fallback.
+`juva99/NuvioTV` is aligned with upstream's published `1.1.0-beta.5` tag.
+Subtitle AutoSync, its settings, and its player integration come directly from
+upstream. The fork's old subtitle alignment engines, reference scanner,
+GitHub sync-failure reporting, and associated authorization UI have been removed.
 
-**Aggressive subtitle matching** in playback subtitle settings is off by
-default. Turning it on also searches other same-language add-on subtitles and
-may select a better match. Without it, only the selected subtitle is matched.
+The remaining fork changes are permanent signing and in-app updates for the
+existing `com.nuvio.tv.debug` installation, release automation, IntroDB and avatar
+URL defaults, RTL subtitle punctuation, app-language playback messages, and
+protection against next-episode skipping from stale playback samples.
+The RTL checks use small synthetic cues rather than the old sync fixtures.
 
 ## Fork release automation
 
-In `juva99/NuvioTV`, **Follow Upstream Stable Releases** checks
-`NuvioMedia/NuvioTV` hourly (GitHub may delay scheduled runs). It follows stable
-semantic-version releases published after the `1.0.0` baseline, not prereleases.
-It merges each upstream release's pinned commit into `dev`, preserving fork
-changes, then calls the existing subtitle-sync beta release workflow with the
-merged commit. The build still runs subtitle tests and verifies all five APKs,
-their signing certificate, and native libraries before publishing.
+**Follow Upstream Stable Releases** checks `NuvioMedia/NuvioTV` hourly (GitHub may
+delay scheduled runs). The initial migration uses `1.1.0-beta.5`, but subsequent
+automatic updates follow **stable releases only**, published after that baseline.
+Published tags are resolved to pinned commits; unreleased `dev` changes and beta
+releases are not automatically imported.
 
-Merge conflicts create an open PR into `dev` with the conflicting files listed;
-subsequent runs wait for that PR instead of creating duplicates. Resolve the
-conflicts and merge the PR to resume automatic publication. Other failed checks
-stop publication and appear as failed Actions runs. A failed build may leave the
-upstream merge on `dev`; the next run retries unpublished upstream releases.
-Successful releases record an upstream marker in their notes to prevent
-duplicates. Do not remove that marker. Multiple missed releases are processed
-oldest first, one per run.
+Each release is merged into `dev` while retaining only the documented fork
+changes. **Minimal Fork Release** then runs upstream AutoSync and focused
+player/updater tests, builds all five benchmark APKs, and checks their application
+ID, version code, permanent signing certificate, and Dolby Vision native library.
+Fork releases use the upstream stable tag and are published as stable releases,
+so the existing fork updater can find them without a special subtitle-sync channel.
 
-Beta numbering retains the `v0.9.0-beta-subtitle-sync.N` updater channel and uses
-Android version code `2000 + N`; use that convention for manual releases too.
-Both release workflows serialize beta publication. To pause automation, disable
-**Follow Upstream Stable Releases** in Actions. It can also be run manually.
-The repository must allow GitHub Actions to create pull requests.
-Publication verifies that the built commit is still the release branch's tip.
-If the branch advances during a build, retry from its current commit rather than
-publishing an older revision.
+Android version codes continue above the old fork builds (`2024` was the last
+legacy release). The release notes record `nuvio-upstream-release` and
+`nuvio-fork-version-code` markers to prevent duplicate publication and preserve
+upgrade-safe numbering. Do not remove these markers. Manual releases must also
+use an increasing version code; the release workflow checks it and records it.
+The existing `NUVIO_SUBTITLE_BETA_*` signing secrets keep their names and key to
+allow installed fork APKs to upgrade without uninstalling.
+
+Merge conflicts create one open resolution PR into `dev`; subsequent runs wait
+for it to be merged. Resolve conflicts without reintroducing the old sync stack.
+Other failed checks stop publication. A failed build may leave the merge on
+`dev`; the next run retries unpublished upstream releases. Missed releases are
+processed oldest first, one per run. Publication also refuses a build if `dev`
+advances before it finishes.
+
+To pause automation, disable **Follow Upstream Stable Releases** in Actions.
+It can also be run manually. The repository must allow Actions to create PRs.
 
 ## License
 

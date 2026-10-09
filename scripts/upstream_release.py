@@ -9,8 +9,25 @@ import uuid
 from pathlib import Path
 
 
-BETA_TAG = re.compile(r"v0\.9\.0-beta-subtitle-sync\.([0-9]+)")
+LEGACY_BETA_TAG = re.compile(r"v?[0-9]+\.[0-9]+\.[0-9]+-beta-subtitle-sync\.([0-9]+)")
 STABLE_TAG = re.compile(r"v?[0-9]+\.[0-9]+\.[0-9]+")
+VERSION_CODE_MARKER = re.compile(r"<!-- nuvio-fork-version-code:([0-9]+) -->")
+
+
+def next_version_code(fork_releases: list[dict]) -> int:
+    version_codes = [
+        2000 + int(match.group(1))
+        for fork in fork_releases
+        if (match := LEGACY_BETA_TAG.fullmatch(fork["tag_name"]))
+    ]
+    version_codes.extend(
+        int(match.group(1))
+        for fork in fork_releases
+        for match in VERSION_CODE_MARKER.finditer(fork.get("body") or "")
+    )
+    if not version_codes:
+        raise ValueError("No fork version-code history found to establish upgrade-safe versioning")
+    return max(version_codes) + 1
 
 
 def plan_release(
@@ -25,10 +42,14 @@ def plan_release(
         and STABLE_TAG.fullmatch(release["tag_name"])
     ]
     baseline = next(
-        (release for release in stable if release["tag_name"] == baseline_tag), None
+        (
+            release for release in upstream_releases
+            if not release["draft"] and release["tag_name"] == baseline_tag
+        ),
+        None,
     )
     if baseline is None:
-        raise ValueError(f"Upstream stable baseline is missing: {baseline_tag}")
+        raise ValueError(f"Upstream release baseline is missing: {baseline_tag}")
 
     published = [release for release in fork_releases if not release["draft"]]
     pending = [
@@ -44,30 +65,25 @@ def plan_release(
         return {"pending": "false"}
 
     release = min(pending, key=lambda item: item["published_at"])
-    sequences = [
-        int(match.group(1))
-        for fork in fork_releases
-        if (match := BETA_TAG.fullmatch(fork["tag_name"]))
-    ]
-    if not sequences:
-        raise ValueError("No existing subtitle-sync beta found to establish versioning")
-    sequence = max(sequences) + 1
+    version_code = next_version_code(fork_releases)
     tag = release["tag_name"]
+    if any(fork["tag_name"] == tag for fork in fork_releases):
+        raise ValueError(f"Fork release tag already exists without a published upstream marker: {tag}")
     notes = (
         f"## Upstream stable {tag}\n\n"
-        f"- Merged [{upstream} {tag}]({release['html_url']}) into this fork's dev branch.\n"
-        "- Retains this fork's Subtitle Sync V2 and existing development changes.\n"
-        "- Passed the subtitle synchronization tests, APK signing, and native-library checks.\n\n"
-        "This subtitle-sync build remains a prerelease and may include development changes "
-        "beyond the upstream stable release.\n\n"
-        f"<!-- nuvio-upstream-release:{tag} -->"
+        f"- Based on [{upstream} {tag}]({release['html_url']}) with upstream AutoSync unchanged.\n"
+        "- Retains fork signing/updating, IntroDB/avatar defaults, RTL punctuation, "
+        "app-language, and next-episode fixes.\n"
+        "- Passed the focused player/updater tests, APK signing, and native-library checks.\n\n"
+        f"<!-- nuvio-upstream-release:{tag} -->\n"
+        f"<!-- nuvio-fork-version-code:{version_code} -->"
     )
     return {
         "pending": "true",
         "upstream_tag": tag,
-        "release_tag": f"v0.9.0-beta-subtitle-sync.{sequence}",
-        "release_title": f"NuvioTV Subtitle Sync V2 Test {sequence} - Upstream {tag}",
-        "version_code": str(2000 + sequence),
+        "release_tag": tag,
+        "release_title": f"NuvioTV {tag} - Minimal Fork",
+        "version_code": str(version_code),
         "release_notes": notes,
     }
 
@@ -92,14 +108,14 @@ def conflict_pr_body(template: str, tag: str, conflicts: list[str], approval_url
         "Issue or approval": f"Approved fork release automation: {approval_url}",
         "Reproduction steps": "Not a bug-fix PR. Fetch the upstream release tag and merge it "
         "into dev to reproduce these merge conflicts.",
-        "UI / behavior impact": "Includes the upstream stable release's changes; preserve "
-        "this fork's subtitle synchronization when resolving conflicts.",
+        "UI / behavior impact": "Includes the upstream stable release's changes; use upstream "
+        "AutoSync unchanged and preserve only the documented minimal fork fixes.",
         "Policy check": "This PR implements the approved upstream integration request.",
         "Scope boundaries": "Only upstream release integration and necessary conflict resolution; "
         "no unrelated fork cleanup or refactoring.",
-        "Testing": "The automatic merge encountered conflicts. No APK build or subtitle tests "
+        "Testing": "The automatic merge encountered conflicts. No APK build or player/updater tests "
         "were run for this merge. After resolution and merge, the release workflow runs "
-        "subtitle tests and verifies five APKs, signatures, and native libraries before publishing. "
+        "player/updater tests and verifies five APKs, signatures, and native libraries before publishing. "
         "The reviewer should record any additional validation performed during resolution.",
         "Screenshots / Video": "Upstream changes may affect UI. Reviewer: attach screenshots "
         "for any UI changes made during conflict resolution.",

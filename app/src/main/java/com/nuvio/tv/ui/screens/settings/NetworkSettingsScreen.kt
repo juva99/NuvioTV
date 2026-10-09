@@ -67,7 +67,6 @@ import com.nuvio.tv.R
 import com.nuvio.tv.data.local.Dv7HandlingMode
 import com.nuvio.tv.data.local.InternalPlayerEngine
 import com.nuvio.tv.domain.model.ExperienceMode
-import com.nuvio.tv.ui.screens.addon.QrCodeOverlay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -388,7 +387,6 @@ fun AdvancedSettingsContent(
     val networkListState = rememberLazyListState()
     var showExperienceModeConfirmation by remember { mutableStateOf(false) }
     var showSentryDialog by remember { mutableStateOf(false) }
-    var showGitHubIssueTokenDialog by remember { mutableStateOf(false) }
     Box(modifier = Modifier.fillMaxSize()) {
     LazyColumn(
         state = networkListState,
@@ -549,36 +547,6 @@ fun AdvancedSettingsContent(
                             )
                         )
                     }
-                )
-                SettingsToggleRow(
-                    title = stringResource(R.string.advanced_subtitle_sync_issue_reports),
-                    subtitle = stringResource(R.string.advanced_subtitle_sync_issue_reports_subtitle),
-                    checked = uiState.subtitleSyncIssueReportsEnabled,
-                    onToggle = {
-                        if (uiState.subtitleSyncIssueReportsEnabled) {
-                            viewModel.onEvent(
-                                AdvancedSettingsEvent.SetSubtitleSyncIssueReportsEnabled(false)
-                            )
-                        } else if (uiState.githubIssueTokenConfigured) {
-                            viewModel.onEvent(
-                                AdvancedSettingsEvent.SetSubtitleSyncIssueReportsEnabled(true)
-                            )
-                        } else {
-                            showGitHubIssueTokenDialog = true
-                        }
-                    }
-                )
-                SettingsActionRow(
-                    title = stringResource(R.string.advanced_github_issue_token),
-                    subtitle = stringResource(R.string.advanced_github_issue_token_subtitle),
-                    value = stringResource(
-                        if (uiState.githubIssueTokenConfigured) {
-                            R.string.advanced_github_issue_token_configured
-                        } else {
-                            R.string.advanced_github_issue_token_not_configured
-                        }
-                    ),
-                    onClick = { showGitHubIssueTokenDialog = true }
                 )
                 SettingsToggleRow(
                     title = stringResource(R.string.advanced_player_stats_hud),
@@ -871,60 +839,6 @@ fun AdvancedSettingsContent(
             },
             onDismiss = { showSentryDialog = false }
         )
-    }
-
-    if (showGitHubIssueTokenDialog) {
-        GitHubIssueReportingTokenDialog(
-            tokenConfigured = uiState.githubIssueTokenConfigured,
-            githubAuthorizationAvailable = uiState.githubIssueAuthorizationAvailable,
-            onSave = { token ->
-                viewModel.onEvent(
-                    AdvancedSettingsEvent.SetGitHubIssueToken(
-                        token = token,
-                        enableAfterSave = !uiState.githubIssueTokenConfigured
-                    )
-                )
-                showGitHubIssueTokenDialog = false
-            },
-            onClear = {
-                viewModel.onEvent(AdvancedSettingsEvent.ClearGitHubIssueToken)
-                showGitHubIssueTokenDialog = false
-            },
-            onConnectWithGitHub = {
-                showGitHubIssueTokenDialog = false
-                viewModel.onEvent(AdvancedSettingsEvent.StartGitHubIssueAuthorization)
-            },
-            onDismiss = { showGitHubIssueTokenDialog = false }
-        )
-    }
-
-    when (val authorizationState = uiState.githubIssueAuthorization) {
-        GitHubIssueAuthorizationState.Idle -> Unit
-        is GitHubIssueAuthorizationState.AwaitingApproval -> {
-            QrCodeOverlay(
-                qrBitmap = authorizationState.qrBitmap,
-                serverUrl = authorizationState.verificationUriComplete,
-                instruction = stringResource(
-                    R.string.github_issue_authorization_instruction,
-                    authorizationState.userCode
-                ),
-                onClose = {
-                    viewModel.onEvent(AdvancedSettingsEvent.CancelGitHubIssueAuthorization)
-                },
-                qrSize = 280.dp
-            )
-        }
-        else -> {
-            GitHubIssueAuthorizationStatusDialog(
-                state = authorizationState,
-                onRetry = {
-                    viewModel.onEvent(AdvancedSettingsEvent.StartGitHubIssueAuthorization)
-                },
-                onDismiss = {
-                    viewModel.onEvent(AdvancedSettingsEvent.CancelGitHubIssueAuthorization)
-                }
-            )
-        }
     }
 }
 

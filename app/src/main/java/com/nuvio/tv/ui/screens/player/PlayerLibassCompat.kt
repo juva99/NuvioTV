@@ -31,15 +31,14 @@ internal fun ExoPlayer.Builder.buildWithAssSupportCompat(
     playerMediaSourceFactory: PlayerMediaSourceFactory? = null,
     dataSourceFactory: DataSource.Factory = PlayerPlaybackNetworking.createDataSourceFactory(context),
     extractorsFactory: ExtractorsFactory = DefaultExtractorsFactory(),
-    renderersFactory: RenderersFactory = DefaultRenderersFactory(context),
-    extractorsFactoryDecorator: (ExtractorsFactory) -> ExtractorsFactory = { it }
+    renderersFactory: RenderersFactory = DefaultRenderersFactory(context)
 ): ExoPlayer {
     val assHandler = AssHandler(renderType)
     val assSubtitleParserFactory = CompatAssSubtitleParserFactory(assHandler)
-    val assExtractorsFactory = extractorsFactoryDecorator(extractorsFactory.withAssMkvSupportCompat(
+    val assExtractorsFactory = extractorsFactory.withAssMkvSupportCompat(
         subtitleParserFactory = assSubtitleParserFactory,
         assHandler = assHandler
-    ))
+    )
     playerMediaSourceFactory?.configureSubtitleParsing(
         extractorsFactory = assExtractorsFactory,
         subtitleParserFactory = assSubtitleParserFactory
@@ -102,18 +101,19 @@ private fun ExtractorsFactory.withAssMkvSupportCompat(
     return ExtractorsFactory {
         val extractors = delegate.createExtractors()
         extractors.forEachIndexed { index, extractor ->
+            val underlying = extractor.getUnderlyingImplementation()
             // Stock MatroskaExtractor: replace with ASS-aware variant for libass support.
-            if (extractor is StockMatroskaExtractor) {
+            if (underlying is StockMatroskaExtractor) {
                 extractors[index] = NuvioAssMatroskaExtractor(subtitleParserFactory, assHandler)
             }
             // The DV7 factory swaps in a vendored DvMatroskaExtractor for DV conversion.
             // Preserve its Dolby Vision transformer while enabling libass and zlib subtitle
             // decompression from the same vendored Matroska extractor base class.
-            if (extractor is DvMatroskaExtractor) {
+            if (underlying is DvMatroskaExtractor) {
                 extractors[index] = NuvioAssMatroskaExtractor(
                     subtitleParserFactory = subtitleParserFactory,
                     assHandler = assHandler,
-                    dolbyVisionSampleTransformer = extractor.dolbyVisionSampleTransformer
+                    dolbyVisionSampleTransformer = underlying.dolbyVisionSampleTransformer
                 )
             }
         }

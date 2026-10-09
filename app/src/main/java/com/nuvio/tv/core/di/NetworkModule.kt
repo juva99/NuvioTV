@@ -8,8 +8,6 @@ import com.nuvio.tv.data.remote.api.AniSkipApi
 import com.nuvio.tv.data.remote.api.AnimeSkipApi
 import com.nuvio.tv.data.remote.api.AuthDiagnosticReportApi
 import com.nuvio.tv.data.remote.api.GitHubReleaseApi
-import com.nuvio.tv.data.remote.api.GitHubIssueApi
-import com.nuvio.tv.data.remote.api.GitHubOAuthApi
 import com.nuvio.tv.data.remote.api.SupportersApi
 import com.nuvio.tv.data.remote.api.TraktApi
 import com.nuvio.tv.data.remote.api.TrailerApi
@@ -136,6 +134,12 @@ object NetworkModule {
             .build()
     }
 
+    /**
+     * Permissive client for addon-provided URLs, including self-hosted servers with self-signed
+     * certificates. Uses a separate cache from first-party traffic.
+     *
+     * Do not use for first-party endpoints.
+     */
     @Provides
     @Singleton
     @Named("addonPermissive")
@@ -152,7 +156,6 @@ object NetworkModule {
             init(null, arrayOf<TrustManager>(trustAllManager), SecureRandom())
         }
         return okHttpClient.newBuilder()
-            // Keep unvalidated addon responses out of the first-party cache.
             .cache(Cache(File(context.cacheDir, "addon_http_cache"), 50L * 1024 * 1024))
             .sslSocketFactory(sslContext.socketFactory, trustAllManager)
             .hostnameVerifier { _, _ -> true }
@@ -474,64 +477,6 @@ object NetworkModule {
     @Singleton
     fun provideGitHubReleaseApi(@Named("github") retrofit: Retrofit): GitHubReleaseApi =
         retrofit.create(GitHubReleaseApi::class.java)
-
-    @Provides
-    @Singleton
-    @Named("githubIssues")
-    fun provideGitHubIssueOkHttpClient(): OkHttpClient =
-        OkHttpClient.Builder()
-            .dns(IPv4FirstDns())
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .addInterceptor { chain ->
-                val version = BuildConfig.VERSION_NAME.ifBlank { "dev" }
-                chain.proceed(
-                    chain.request().newBuilder()
-                        .header("User-Agent", "Nuvio/$version")
-                        .build()
-                )
-            }
-            .addInterceptor(HttpLoggingInterceptor().apply {
-                level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BASIC
-                else HttpLoggingInterceptor.Level.NONE
-            })
-            .build()
-
-    @Provides
-    @Singleton
-    @Named("githubIssues")
-    fun provideGitHubIssueRetrofit(
-        @Named("githubIssues") okHttpClient: OkHttpClient,
-        moshi: Moshi
-    ): Retrofit =
-        Retrofit.Builder()
-            .baseUrl("https://api.github.com/")
-            .client(okHttpClient)
-            .addConverterFactory(MoshiConverterFactory.create(moshi))
-            .build()
-
-    @Provides
-    @Singleton
-    fun provideGitHubIssueApi(@Named("githubIssues") retrofit: Retrofit): GitHubIssueApi =
-        retrofit.create(GitHubIssueApi::class.java)
-
-    @Provides
-    @Singleton
-    @Named("githubAuth")
-    fun provideGitHubAuthRetrofit(
-        @Named("githubIssues") okHttpClient: OkHttpClient,
-        moshi: Moshi
-    ): Retrofit =
-        Retrofit.Builder()
-            .baseUrl("https://github.com/")
-            .client(okHttpClient)
-            .addConverterFactory(MoshiConverterFactory.create(moshi))
-            .build()
-
-    @Provides
-    @Singleton
-    fun provideGitHubOAuthApi(@Named("githubAuth") retrofit: Retrofit): GitHubOAuthApi =
-        retrofit.create(GitHubOAuthApi::class.java)
 
     @Provides
     @Singleton

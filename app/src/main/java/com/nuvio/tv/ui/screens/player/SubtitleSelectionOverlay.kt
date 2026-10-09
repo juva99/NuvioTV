@@ -71,6 +71,7 @@ import com.nuvio.tv.data.local.SubtitleStyleSettings
 import com.nuvio.tv.domain.model.Subtitle
 import com.nuvio.tv.ui.components.LoadingIndicator
 import com.nuvio.tv.ui.screens.detail.requestFocusAfterFrames
+import com.nuvio.tv.ui.screens.player.autosync.AutoSyncedChip
 
 private const val SubtitleOffLanguageKey = "__off__"
 private const val SubtitleUnknownLanguageKey = "__unknown__"
@@ -105,12 +106,6 @@ internal fun SubtitleSelectionOverlay(
     subtitleDelayMs: Int,
     installedSubtitleAddonOrder: List<String>,
     isLoadingAddons: Boolean,
-    automaticSyncAvailable: Boolean,
-    automaticSyncRunning: Boolean,
-    automaticSyncMessage: String?,
-    automaticSyncReferenceTrackCount: Int,
-    automaticSyncCapturedCueCount: Int,
-    automaticSyncEngineSupported: Boolean,
     useLibass: Boolean = false,
     isUsingMpv: Boolean = false,
     onInternalTrackSelected: (Int) -> Unit,
@@ -276,17 +271,28 @@ internal fun SubtitleSelectionOverlay(
         selectedOptionId,
         sessionInternalTracks,
         sessionSelectedInternalIndex,
-        selectedAddonSubtitle
+        sessionSelectedAddonSubtitle
     ) {
         if (!useLibass && !isUsingMpv) return@remember false
-        val liveAddonUrl = selectedAddonSubtitle?.url?.lowercase(java.util.Locale.US).orEmpty()
-        val liveInternalTrack = internalTracks.getOrNull(selectedInternalIndex)
-        val internalCodec = liveInternalTrack?.codec?.lowercase(java.util.Locale.US).orEmpty()
-        val isAss = if (selectedAddonSubtitle != null) {
-            liveAddonUrl.contains(".ass") || liveAddonUrl.contains(".ssa")
-        } else {
-            internalCodec.contains("ass") || internalCodec.contains("ssa") ||
-                liveInternalTrack?.name?.contains("ASS", ignoreCase = true) == true
+        val selectedOption = subtitleOptions.firstOrNull { it.id == selectedOptionId }
+        val isAss = when (selectedOption?.kind) {
+            SubtitleOptionKind.INTERNAL -> {
+                val track = selectedOption.internalTrackIndex?.let { sessionInternalTracks.getOrNull(it) }
+                val codec = track?.codec?.lowercase(java.util.Locale.US).orEmpty()
+                codec.contains("ass") || codec.contains("ssa") || track?.name?.contains("ASS", ignoreCase = true) == true
+            }
+            SubtitleOptionKind.ADDON -> {
+                val url = selectedOption.addonSubtitle?.url?.lowercase(java.util.Locale.US).orEmpty()
+                url.contains(".ass") || url.contains(".ssa")
+            }
+            null -> {
+                val currentInternalTrack = sessionInternalTracks.getOrNull(sessionSelectedInternalIndex)
+                val internalCodec = currentInternalTrack?.codec?.lowercase(java.util.Locale.US).orEmpty()
+                val addonUrl = sessionSelectedAddonSubtitle?.url?.lowercase(java.util.Locale.US).orEmpty()
+                internalCodec.contains("ass") || internalCodec.contains("ssa") ||
+                    currentInternalTrack?.name?.contains("ASS", ignoreCase = true) == true ||
+                    addonUrl.contains(".ass") || addonUrl.contains(".ssa")
+            }
         }
         isAss && (isUsingMpv || useLibass)
     }
@@ -589,13 +595,6 @@ internal fun SubtitleSelectionOverlay(
                     SubtitleStyleRail(
                         subtitleStyle = subtitleStyle,
                         subtitleDelayMs = subtitleDelayMs,
-                        selectedAddonSubtitle = selectedAddonSubtitle,
-                        automaticSyncAvailable = automaticSyncAvailable,
-                        automaticSyncRunning = automaticSyncRunning,
-                        automaticSyncMessage = automaticSyncMessage,
-                        automaticSyncReferenceTrackCount = automaticSyncReferenceTrackCount,
-                        automaticSyncCapturedCueCount = automaticSyncCapturedCueCount,
-                        automaticSyncEngineSupported = automaticSyncEngineSupported,
                         listState = styleListState,
                         onMoveLeft = ::moveFocusBackToOptionRail,
                         focusRequesters = styleRequesters,
@@ -812,13 +811,6 @@ private fun SubtitleOptionsRail(
 private fun SubtitleStyleRail(
     subtitleStyle: SubtitleStyleSettings,
     subtitleDelayMs: Int,
-    selectedAddonSubtitle: Subtitle?,
-    automaticSyncAvailable: Boolean,
-    automaticSyncRunning: Boolean,
-    automaticSyncMessage: String?,
-    automaticSyncReferenceTrackCount: Int,
-    automaticSyncCapturedCueCount: Int,
-    automaticSyncEngineSupported: Boolean,
     listState: LazyListState,
     onMoveLeft: () -> Unit,
     focusRequesters: Map<String, FocusRequester>,
@@ -895,53 +887,6 @@ private fun SubtitleStyleRail(
                                 color = Color.White.copy(alpha = 0.7f)
                             )
                         }
-                    }
-                }
-            }
-            item {
-                val enabled = automaticSyncEngineSupported &&
-                    selectedAddonSubtitle != null &&
-                    !automaticSyncRunning
-                val contentColor = if (automaticSyncRunning) NuvioTheme.colors.OnSecondary else Color.White
-                Card(
-                    onClick = {
-                        if (enabled) onEvent(PlayerEvent.OnAutomaticallySyncSubtitle)
-                    },
-                    colors = overlayCardColors(selected = automaticSyncRunning),
-                    shape = CardDefaults.shape(RoundedCornerShape(NuvioTheme.radii.md)),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .focusRequester(requireNotNull(focusRequesters[StyleFocusKey.AutomaticSync]))
-                        .onFocusChanged {
-                            if (it.isFocused) onStyleFocused(StyleFocusKey.AutomaticSync)
-                        },
-                    scale = CardDefaults.scale(focusedScale = 1f, pressedScale = 1f)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = NuvioTheme.spacing.md, vertical = 10.dp),
-                        verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.xs)
-                    ) {
-                        Text(
-                            text = if (automaticSyncRunning) {
-                                stringResource(R.string.subtitle_automatic_sync_analyzing)
-                            } else {
-                                stringResource(R.string.subtitle_automatic_sync)
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = contentColor.copy(alpha = if (enabled || automaticSyncRunning) 1f else 0.45f)
-                        )
-                        val detail = automaticSyncMessage ?: when {
-                            !automaticSyncEngineSupported -> stringResource(R.string.subtitle_automatic_sync_exoplayer_only)
-                            selectedAddonSubtitle == null -> stringResource(R.string.subtitle_timing_select_addon_first)
-                            automaticSyncReferenceTrackCount == 0 || !automaticSyncAvailable ->
-                                stringResource(R.string.subtitle_automatic_sync_scan_on_demand)
-                            else -> stringResource(R.string.subtitle_automatic_sync_description)
-                        }
-                        Text(
-                            text = detail,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = contentColor.copy(alpha = 0.7f)
-                        )
                     }
                 }
             }
@@ -1285,7 +1230,13 @@ private fun SubtitleOptionCard(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                SourceChip(label = item.sourceLabel, selected = item.isSelected)
+                Row( // AutoSync hook: room for the "Auto synced" chip beside the source
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SourceChip(label = item.sourceLabel, selected = item.isSelected)
+                    item.addonSubtitle?.let { AutoSyncedChip(it.url, item.isSelected) } // AutoSync hook
+                }
                 Text(
                     text = item.title,
                     style = MaterialTheme.typography.bodyLarge,
@@ -1731,7 +1682,6 @@ private object StyleFocusKey {
     const val OffsetDecrease = "offset_decrease"
     const val OffsetIncrease = "offset_increase"
     const val DelaySet = "delay_set"
-    const val AutomaticSync = "automatic_sync"
     const val Reset = "reset"
     const val TextColorPrefix = "text_color"
     const val OpacityDecrease = "opacity_decrease"
@@ -1748,14 +1698,13 @@ private enum class OverlayFocusRail {
 private fun styleListIndexForFocusKey(focusKey: String): Int {
     return when {
         focusKey == StyleFocusKey.DelaySet -> 0
-        focusKey == StyleFocusKey.AutomaticSync -> 1
-        focusKey == StyleFocusKey.FontSizeDecrease || focusKey == StyleFocusKey.FontSizeIncrease -> 2
-        focusKey == StyleFocusKey.Bold -> 3
-        focusKey.startsWith("${StyleFocusKey.TextColorPrefix}:") -> 4
-        focusKey == StyleFocusKey.OpacityDecrease || focusKey == StyleFocusKey.OpacityIncrease -> 5
-        focusKey == StyleFocusKey.OutlineToggle || focusKey.startsWith("${StyleFocusKey.OutlineColorPrefix}:") -> 6
-        focusKey == StyleFocusKey.OffsetDecrease || focusKey == StyleFocusKey.OffsetIncrease -> 7
-        focusKey == StyleFocusKey.Reset -> 8
+        focusKey == StyleFocusKey.FontSizeDecrease || focusKey == StyleFocusKey.FontSizeIncrease -> 1
+        focusKey == StyleFocusKey.Bold -> 2
+        focusKey.startsWith("${StyleFocusKey.TextColorPrefix}:") -> 3
+        focusKey == StyleFocusKey.OpacityDecrease || focusKey == StyleFocusKey.OpacityIncrease -> 4
+        focusKey == StyleFocusKey.OutlineToggle || focusKey.startsWith("${StyleFocusKey.OutlineColorPrefix}:") -> 5
+        focusKey == StyleFocusKey.OffsetDecrease || focusKey == StyleFocusKey.OffsetIncrease -> 6
+        focusKey == StyleFocusKey.Reset -> 7
         else -> 0
     }
 }
@@ -1778,7 +1727,6 @@ private fun rememberStyleFocusRequesters(): Map<String, FocusRequester> {
             StyleFocusKey.OffsetDecrease,
             StyleFocusKey.OffsetIncrease,
             StyleFocusKey.DelaySet,
-            StyleFocusKey.AutomaticSync,
             StyleFocusKey.Reset
         ).associateWith { FocusRequester() } +
             OverlayTextColors.associate { color ->

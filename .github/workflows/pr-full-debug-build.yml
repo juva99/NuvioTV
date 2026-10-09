@@ -59,21 +59,18 @@ jobs:
             echo "NUVIO_RELEASE_KEY_ALIAS=androiddebugkey"
             echo "NUVIO_RELEASE_KEY_PASSWORD=android"
             echo "NUVIO_RELEASE_STORE_PASSWORD=android"
-            echo "GITHUB_ISSUE_CLIENT_ID=${{ vars.NUVIO_GITHUB_ISSUE_CLIENT_ID }}"
           } >> "$GITHUB_ENV"
 
-      - name: Test subtitle synchronization
+      - name: Test upstream AutoSync and retained fork fixes
         run: |
           ./gradlew :app:testFullDebugUnitTest \
             --tests 'com.nuvio.tv.updater.*' \
-            --tests "com.nuvio.tv.ui.screens.player.SrtDocumentTest" \
-            --tests "com.nuvio.tv.ui.screens.player.SubtitleReferenceCaptureTest" \
-            --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerTest" \
-            --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerFixtureTest" \
-            --tests "com.nuvio.tv.ui.screens.player.SubtitleTimingAlignerGoldenTest" \
-            --tests "com.nuvio.tv.ui.screens.player.SubtitleSyncRealWorldTest" \
-            --tests "com.nuvio.tv.ui.screens.player.SubtitleRateAwareAlignerTest" \
-            --tests "com.nuvio.tv.data.repository.GitHubIssueReportRepositoryTest"
+            --tests "com.nuvio.tv.ui.screens.player.autosync.*" \
+            --tests "com.nuvio.tv.ui.screens.player.PlayerSubtitleRtlFixTest" \
+            --tests "com.nuvio.tv.ui.screens.player.PostPlayResetRulesTest" \
+            --tests "com.nuvio.tv.ui.screens.player.NaturalPlaybackCompletionRulesTest" \
+            --tests "com.nuvio.tv.ui.screens.player.PlayerNextEpisodeRulesTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SkipIntroVisibilityRulesTest"
 
       - name: Build fullDebug APK
         run: ./gradlew :app:assembleFullDebug --stacktrace

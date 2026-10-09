@@ -92,9 +92,7 @@ class TrailerServiceUseTrailersGateTest {
         val tmdbApi = mockk<TmdbApi>(relaxed = true)
         val extractor = mockk<InAppYouTubeExtractor>(relaxed = true)
         val tmdbSettingsDataStore = mockk<TmdbSettingsDataStore> {
-            every { settings } returns MutableStateFlow(
-                TmdbSettings(language = "en", useTrailers = enabled)
-            )
+            every { settings } returns MutableStateFlow(TmdbSettings(language = "en", useTrailers = enabled))
         }
         val tmdbService = mockk<TmdbService> {
             every { apiKey() } returns "tmdb-key"

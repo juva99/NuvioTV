@@ -9,7 +9,8 @@ Use this skill for release work in this repository. It is intentionally safe by 
 
 ## Repository Release Paths
 
-- Subtitle-sync beta releases use `.github/workflows/subtitle-sync-beta-release.yml`.
+- Signed fork releases use `.github/workflows/fork-release.yml`.
+- `.github/workflows/upstream-stable-release.yml` follows published stable releases after the `1.1.0-beta.5` migration baseline.
 - Standard Android releases use `.github/workflows/android-release.yml`.
 - Release metadata and validation live in `scripts/release-metadata.sh`, `scripts/generate-release-notes.sh`, and `scripts/tests/`.
 - Android version defaults and release build configuration live in `app/build.gradle.kts`.
@@ -29,35 +30,36 @@ Use PowerShell on Windows. Prefer these commands:
 git status --short --branch
 ```
 
-## Subtitle Beta Release
+## Fork Stable Release
 
 The dispatch inputs are required:
 
-- `release_tag`: use the next unused tag, normally `v<version>-beta-subtitle-sync.<n>`.
+- `release_tag`: use the upstream stable tag, for example `1.1.0`.
 - `release_title`: human-readable GitHub release title.
 - `version_code`: integer greater than the last published Android version code.
 - `release_notes`: Markdown release notes.
 
 Before dispatching:
 
-1. Find the latest subtitle-sync release and tag.
-2. Find the last successful workflow run and inspect its `NUVIO_VERSION_CODE` in the logs if the version code is not obvious.
-3. Verify the selected tag does not exist locally or remotely.
+1. Find the latest fork release and upstream stable tag. Do not import unreleased `dev` commits or beta releases.
+2. Read the `nuvio-fork-version-code` release-note marker. Legacy subtitle-sync builds use `2000 + N`; the next fork code must exceed all previous codes.
+3. Verify the selected tag does not exist on the fork remote. A local upstream tag with the same name is expected.
 4. Summarize user-visible changes from the commits since the previous release. Do not expose secrets, tokens, subtitle URLs with credentials, or internal implementation noise.
 5. Dispatch only after the user requested publishing or explicitly approved the exact release inputs.
 
 Example:
 
 ```powershell
+gh workflow run fork-release.yml `
   --repo OWNER/REPO `
   --ref dev `
-  -f release_tag=v0.9.0-beta-subtitle-sync.17 `
-  -f release_title="NuvioTV 0.9.0 beta - Subtitle Sync Test 17" `
-  -f version_code=2017 `
+  -f release_tag=1.1.0 `
+  -f release_title="NuvioTV 1.1.0 - Minimal Fork" `
+  -f version_code=2025 `
   -f release_notes="$(Get-Content release-notes.md -Raw)"
 ```
 
-The workflow checks out the selected ref, prepares secrets on the runner, runs subtitle synchronization tests, builds benchmark APKs, verifies signing and native libraries, and creates the prerelease. Do not bypass those checks with `gh release create` unless the workflow is unavailable and the user explicitly approves a manual fallback.
+The workflow checks out the selected ref, runs upstream AutoSync and retained-fix tests, builds five benchmark APKs, verifies their package/version/signature/native library, and publishes a stable fork release. Preserve the `nuvio-upstream-release` marker when following an upstream release; the workflow records `nuvio-fork-version-code`. Keep the legacy `NUVIO_SUBTITLE_BETA_*` signing secrets and `com.nuvio.tv.debug` package for installed APK compatibility. Do not bypass the workflow with a manual release unless explicitly approved.
 
 ## Standard Android Release
 
@@ -80,6 +82,8 @@ Run the Python command from the `scripts` directory, or set `PYTHONPATH=scripts`
 After dispatch, record the workflow URL and monitor it:
 
 ```powershell
+gh run list --repo OWNER/REPO --workflow fork-release.yml --limit 5
+gh run watch RUN_ID --repo OWNER/REPO --exit-status
 ```
 
 On failure, report the failed job and actionable log excerpt. Do not rerun automatically when the failure indicates missing secrets, signing configuration, invalid versioning, or a source/test failure. Fix the cause, push a new commit, and dispatch a new release only after confirming the tag remains unused.
@@ -90,7 +94,7 @@ After success, verify the release and all expected APK assets:
 gh api repos/OWNER/REPO/releases/tags/RELEASE_TAG --jq '.target_commitish, .prerelease, .assets[].name'
 ```
 
-The subtitle beta workflow should publish five benchmark APKs: arm64-v8a, armeabi-v7a, universal, x86, and x86_64.
+The fork workflow should publish five benchmark APKs: arm64-v8a, armeabi-v7a, universal, x86, and x86_64.
 
 ## Safety Rules
 

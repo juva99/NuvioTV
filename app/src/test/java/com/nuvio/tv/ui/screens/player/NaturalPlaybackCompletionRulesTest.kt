@@ -18,6 +18,26 @@ class NaturalPlaybackCompletionRulesTest {
     }
 
     @Test
+    fun `stale previous episode completion is ignored until current stream plays`() {
+        assertFalse(
+            shouldTreatAsNaturalPlaybackCompletion(
+                hasRenderedFirstFrame = true,
+                hasFatalError = false,
+                durationMs = 2_400_000L,
+                hasObservedFreshPlaybackForCurrentStream = false
+            )
+        )
+        assertTrue(
+            shouldTreatAsNaturalPlaybackCompletion(
+                hasRenderedFirstFrame = true,
+                hasFatalError = false,
+                durationMs = 2_400_000L,
+                hasObservedFreshPlaybackForCurrentStream = true
+            )
+        )
+    }
+
+    @Test
     fun `short debrid placeholder is not natural completion`() {
         // Comet-style cache-sync / error clips are a few seconds long.
         assertFalse(

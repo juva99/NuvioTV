@@ -4,7 +4,6 @@ internal data class AutoSyncSubtitleCandidate(
     val url: String,
     val language: String,
     val name: String? = null,
-    val headers: Map<String, String> = emptyMap(),
 )
 
 /**
@@ -19,3 +18,4 @@ internal interface AutoSyncPlayerController {
         listener: ((subtitleUrl: String, delayMs: Int) -> Unit)?,
     )
 }
+

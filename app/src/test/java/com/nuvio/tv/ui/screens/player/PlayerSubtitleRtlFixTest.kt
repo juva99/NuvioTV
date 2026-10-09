@@ -5,7 +5,6 @@ import androidx.media3.extractor.text.CuesWithTiming
 import java.text.Bidi
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PlayerSubtitleRtlFixTest {
@@ -102,62 +101,32 @@ class PlayerSubtitleRtlFixTest {
     }
 
     @Test
-    fun realHebrewFixtureRestoresLegacyPunctuationAndDialogueDashes() {
-        val original = fixture("real-heb-target.srt")
+    fun legacyConventionAppliesAcrossTheTrackAndKeepsTiming() {
+        val original = listOf(
+            timedCue(".\u05e9\u05dc\u05d5\u05dd-", 12_000_000L),
+            timedCue("...\u05e9\u05dc\u05d5\u05dd", 14_000_000L)
+        )
         val fixed = PlayerSubtitleRtlFix.fixTimedCues(original)
-        var sentenceLines = 0
-        var dialogueLines = 0
-        var hebrewLines = 0
-        original.zip(fixed).forEachIndexed { index, (before, after) ->
+        assertEquals("\u202B-\u05e9\u05dc\u05d5\u05dd.\u202C", fixed[0].cues.single().text.toString())
+        assertEquals("\u202B\u05e9\u05dc\u05d5\u05dd...\u202C", fixed[1].cues.single().text.toString())
+        original.zip(fixed).forEach { (before, after) ->
             assertEquals(before.startTimeUs, after.startTimeUs)
             assertEquals(before.durationUs, after.durationUs)
-            val beforeLines = before.cues.single().text.toString().lines()
-            val afterLines = after.cues.single().text.toString().lines()
-            assertEquals(beforeLines.size, afterLines.size)
-            beforeLines.zip(afterLines).forEach { (source, normalized) ->
-                val text = normalized.removePrefix("\u202B").removeSuffix("\u202C")
-                assertEquals("Letters/numbers changed in cue $index",
-                    source.filter(Char::isLetterOrDigit), text.filter(Char::isLetterOrDigit))
-                if (source.none { it in '\u0590'..'\u05FF' }) return@forEach
-                hebrewLines++
-                if (source.firstOrNull() in listOf('.', '!', '?', ',', ';', ':')) {
-                    sentenceLines++
-                    assertTrue("Legacy sentence punctuation still leads cue $index",
-                        text.firstOrNull() !in listOf('.', '!', '?', ',', ';', ':'))
-                }
-                if (source.endsWith('-')) {
-                    dialogueLines++
-                    assertTrue("Legacy dialogue dash still trails cue $index", text.startsWith('-'))
-                }
-            }
         }
-        assertEquals(1203, hebrewLines)
-        assertEquals(1057, sentenceLines)
-        assertEquals(14, dialogueLines)
         assertSame(fixed, PlayerSubtitleRtlFix.fixTimedCues(fixed))
-        println("Hebrew fixture: ${original.size} cues, $hebrewLines Hebrew lines, " +
-            "$sentenceLines legacy sentence boundaries, $dialogueLines dialogue dashes")
     }
 
     @Test
-    fun hebrewTimingOnlyFixtureIsUnchanged() {
-        val cues = fixture("long-heb-target-timings.srt")
-        assertTrue(cues.isNotEmpty())
-        assertTrue(cues.none { entry ->
-            entry.cues.any { cue -> cue.text?.any { it in '\u0590'..'\u05FF' } == true }
-        })
-        assertSame(cues, PlayerSubtitleRtlFix.fixTimedCues(cues))
-        println("Timing-only fixture: ${cues.size} cues unchanged (no Hebrew text)")
+    fun logicalSentenceEvidencePreventsTrackWideLegacyRepair() {
+        val logical = "\u05e9\u05dc\u05d5\u05dd."
+        val leading = ".\u05e9\u05dc\u05d5\u05dd"
+        val fixed = PlayerSubtitleRtlFix.fixTimedCues(
+            listOf(timedCue(logical, 0L), timedCue(leading, 2_000_000L))
+        )
+        assertEquals("\u202B$logical\u202C", fixed[0].cues.single().text.toString())
+        assertEquals("\u202B$leading\u202C", fixed[1].cues.single().text.toString())
     }
 
-    private fun fixture(name: String): List<CuesWithTiming> {
-        val resource = requireNotNull(javaClass.getResource("/subtitle-sync/$name"))
-        return PlayerSubtitleCueParser.parseFromText(resource.readText(), name).map { cue ->
-            CuesWithTiming(
-                listOf(Cue.Builder().setText(cue.text).build()),
-                cue.startTimeMs * 1_000,
-                (cue.endTimeMs - cue.startTimeMs) * 1_000
-            )
-        }
-    }
+    private fun timedCue(text: String, startTimeUs: Long) =
+        CuesWithTiming(listOf(Cue.Builder().setText(text).build()), startTimeUs, 2_000_000L)
 }

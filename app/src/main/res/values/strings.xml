@@ -575,26 +575,6 @@
     <string name="advanced_sentry_reports_subtitle">Send crash and ANR reports with safe context. On by default.</string>
     <string name="advanced_playback_issue_reports">Playback issue reports</string>
     <string name="advanced_playback_issue_reports_subtitle">Show report buttons during playback, long loading, and playback errors</string>
-    <string name="advanced_subtitle_sync_issue_reports">Automatic subtitle-sync issue reports</string>
-    <string name="advanced_subtitle_sync_issue_reports_subtitle">Create a GitHub issue when automatic subtitle sync fails. Reports may include subtitle links, content metadata, file names, infohashes, and timing metadata.</string>
-    <string name="advanced_github_issue_token">GitHub issue token</string>
-    <string name="advanced_github_issue_token_subtitle">Connect with GitHub using QR authorization or enter a token manually.</string>
-    <string name="advanced_github_issue_token_configured">Configured</string>
-    <string name="advanced_github_issue_token_not_configured">Not configured</string>
-    <string name="github_issue_token_dialog_title">GitHub issue token</string>
-    <string name="github_issue_token_dialog_subtitle">Use QR authorization or enter a token manually. Tokens are encrypted on this device.</string>
-    <string name="github_issue_token_dialog_unavailable_subtitle">QR authorization is unavailable in this build. Enter a token manually; tokens are encrypted on this device.</string>
-    <string name="github_issue_token_dialog_placeholder">Paste a fine-grained GitHub token</string>
-    <string name="github_issue_token_dialog_replace_placeholder">Paste a replacement token</string>
-    <string name="github_issue_connect_button">Connect with GitHub (QR)</string>
-    <string name="github_issue_authorization_title">Connect GitHub</string>
-    <string name="github_issue_authorization_subtitle">Authorize the GitHub App installed on the fork with Issues write access. No token is shown on the TV.</string>
-    <string name="github_issue_authorization_instruction">Scan this QR code with your phone, open the URL in a web browser (not the GitHub app), and enter code %1$s if it is not filled automatically.</string>
-    <string name="github_issue_authorization_starting">Preparing GitHub authorization...</string>
-    <string name="github_issue_authorization_completing">Finishing GitHub authorization...</string>
-    <string name="github_issue_authorization_success">GitHub is connected. Subtitle issue reporting is enabled.</string>
-    <string name="github_issue_authorization_retry">Try again</string>
-    <string name="github_issue_authorization_close">Close</string>
     <string name="advanced_player_stats_hud">Playback stats overlay</string>
     <string name="advanced_player_stats_hud_subtitle">Show a button in stream info to toggle live cpu, memory, buffer, bitrate and thermal readings during playback</string>
     <string name="sentry_enable_dialog_title">Turn on crash reports?</string>
@@ -931,6 +911,9 @@
     <string name="sub_org_by_lang_desc">Group subtitles by language.</string>
     <string name="sub_org_by_addon_desc">Group subtitles by addon source.</string>
 
+    <string name="autoplay_preload_next_episode">Preload Next Episode Sources</string>
+    <string name="autoplay_preload_next_episode_sub">Start searching for sources in the background before the next episode button appears.</string>
+
     <string name="autoplay_reuse_last_link">Reuse Last Link</string>
     <string name="autoplay_reuse_last_link_sub">Auto-play your last working stream for this same movie/episode when cache is still valid</string>
     <string name="autoplay_last_link_cache">Last Link Cache Duration</string>
@@ -999,8 +982,8 @@
     <string name="layout_modern_desc">Fixed hero with a single active row for faster browsing</string>
     <string name="layout_section_home">Home Layout</string>
     <string name="layout_section_home_desc">Choose structure and hero source.</string>
-    <string name="layout_landscape_posters">Landscape Posters</string>
-    <string name="layout_landscape_posters_sub">Switch between portrait and landscape cards for Modern view.</string>
+    <string name="layout_landscape_posters">Landscape Poster Mode</string>
+    <string name="layout_landscape_posters_sub">Use landscape cards everywhere.</string>
     <string name="layout_preview_row">Show Preview Row</string>
     <string name="layout_preview_row_sub">Show a partial preview of the row below in Modern Home layout.</string>
     <string name="layout_hero_catalogs">Hero Catalogs</string>
@@ -1089,6 +1072,13 @@
     <string name="upcoming_section_title">Upcoming</string>
     <string name="layout_trailer_button">Show Trailer Button</string>
     <string name="layout_trailer_button_sub">Show trailer button on detail page (only when trailer is available).</string>
+    <string name="layout_trailer_play_in_background">Play in Background</string>
+    <string name="layout_trailer_play_in_background_sub">Play the trailer in place of the backdrop while the page stays visible.</string>
+    <string name="layout_trailer_pause_on_scroll">Pause When Scrolling</string>
+    <string name="layout_trailer_pause_on_scroll_sub">Pause the trailer when you scroll down and resume it when you return to the top.</string>
+    <string name="layout_detail_group_episodes">Episodes</string>
+    <string name="layout_detail_group_trailers">Trailers</string>
+    <string name="layout_detail_group_metadata">Metadata</string>
     <string name="layout_prefer_external_meta">Prefer meta from external addon</string>
     <string name="layout_prefer_external_meta_sub">Use metadata from external addon instead of catalog addon.</string>
     <string name="layout_show_full_release_date">Show full release date</string>
@@ -1250,6 +1240,12 @@
     <string name="mdblist_dialog_placeholder">Enter MDBList API key</string>
     <string name="mdblist_not_set">Not set</string>
     <string name="mdblist_invalid_api_key">Invalid MDBList API key</string>
+    <string name="mdblist_library_lists">Library lists</string>
+    <string name="mdblist_library_lists_description">Choose which MDBList lists appear in the Library and in Manage Lists. The Watchlist is always shown.</string>
+    <string name="mdblist_library_lists_empty">No lists found in your MDBList account yet. Sync to load them.</string>
+    <string name="mdblist_library_lists_summary">%1$d of %2$d shown</string>
+    <string name="tracking_mdblist_features_title">MDBList features</string>
+    <string name="tracking_mdblist_features_subtitle">MDBList-specific settings</string>
 
     <string name="debrid_title">Connected Services</string>
     <string name="debrid_subtitle">Connect accounts for links and library access</string>
@@ -1816,34 +1812,6 @@
     <string name="subtitle_timing_select_addon_first">Select an addon subtitle track first.</string>
     <string name="subtitle_auto_sync_select_addon_track">Select an addon subtitle track to use Auto Sync.</string>
     <string name="subtitle_auto_sync_applied">Sync applied: %1$s</string>
-    <string name="subtitle_automatic_sync">Automatic sync</string>
-    <string name="subtitle_automatic_sync_scan_on_demand">Scan the video for embedded subtitle timing when sync starts.</string>
-    <string name="subtitle_aggressive_sync">Aggressive subtitle matching</string>
-    <string name="subtitle_aggressive_sync_description">When syncing manually, try other same-language add-on subtitles and switch to a better match. Off by default.</string>
-    <string name="subtitle_automatic_sync_description">Match this addon SRT to embedded English subtitle timing.</string>
-    <string name="subtitle_automatic_sync_analyzing">Analyzing subtitle timing…</string>
-    <string name="subtitle_automatic_sync_downloading">Downloading the selected subtitle…</string>
-    <string name="subtitle_automatic_sync_matching">Matching subtitle timelines…</string>
-    <string name="subtitle_automatic_sync_matching_attempt">Matching subtitle timelines (attempt %1$d, %2$d captured cues)…</string>
-    <string name="subtitle_automatic_sync_retry_waiting">Attempt %1$d did not match. Waiting for more dialogue (%2$d captured cues)…</string>
-    <string name="subtitle_automatic_sync_waiting_for_more_cues">Captured %1$d embedded cues. Waiting for more dialogue to verify the match (minimum %2$d).</string>
-    <string name="subtitle_automatic_sync_needs_dialogue">Play more dialogue so the embedded English subtitle can be analyzed.</string>
-    <string name="subtitle_automatic_sync_no_reference">No supported non-forced embedded English subtitle track was detected.</string>
-    <string name="subtitle_automatic_sync_cue_progress">Captured %1$d of %2$d embedded cues. Keep playing dialogue.</string>
-    <string name="subtitle_automatic_sync_scanning_index">Scanning the embedded subtitle index…</string>
-    <string name="subtitle_automatic_sync_index_unavailable">This video has no usable embedded subtitle index. Keep playing to collect cues.</string>
-    <string name="subtitle_automatic_sync_scan_unsupported">Fast subtitle scanning is unavailable for this stream. Keep playing to collect cues.</string>
-    <string name="subtitle_automatic_sync_scan_timed_out">The embedded subtitle index scan timed out. Keep playing to collect cues.</string>
-    <string name="subtitle_automatic_sync_operation_timed_out">Automatic subtitle sync timed out while %1$s. Keep playing dialogue and try again.</string>
-    <string name="subtitle_automatic_sync_exoplayer_only">Automatic sync currently requires ExoPlayer.</string>
-    <string name="subtitle_automatic_sync_invalid_srt">The selected addon subtitle is not a valid SRT or WebVTT file.</string>
-    <string name="subtitle_automatic_sync_unavailable">Could not download or analyze a supported add-on subtitle.</string>
-    <string name="subtitle_automatic_sync_srt_only">Automatic sync currently supports SRT and WebVTT addon subtitles only.</string>
-    <string name="subtitle_automatic_sync_low_confidence">The subtitle timelines could not be matched confidently. Try again after more dialogue has played.</string>
-    <string name="subtitle_automatic_sync_applied">Automatic sync applied with %1$d timing regions (%2$d%% confidence).</string>
-    <string name="subtitle_automatic_sync_applied_v2">Automatic sync applied (%1$d%% confidence).</string>
-    <string name="subtitle_automatic_sync_applied_replaced">Automatic sync applied with a better same-language subtitle (%1$d%% confidence).</string>
-    <string name="subtitle_automatic_sync_failed">Automatic subtitle sync failed.</string>
     <string name="subtitle_timing_loading">Loading subtitle lines…</string>
     <string name="subtitle_timing_no_lines_found">No subtitle lines were found around this moment.</string>
     <string name="subtitle_timing_press_back_cancel">Press Back to cancel</string>
@@ -2106,6 +2074,8 @@
     <string name="library_sort_provider_order">Provider Order</string>
     <string name="library_sort_added_desc">Added ↓</string>
     <string name="library_sort_added_asc">Added ↑</string>
+    <string name="library_sort_released_desc">Released ↓</string>
+    <string name="library_sort_released_asc">Released ↑</string>
     <string name="library_sort_title_asc">Title A-Z</string>
     <string name="library_sort_title_desc">Title Z-A</string>
     <string name="library_error_sort_failed">Couldn\'t load sort order. Showing provider order.</string>
@@ -3383,4 +3353,18 @@
     <string name="shuffle_save_failed">Could not update shuffle. Try again.</string>
     <string name="shuffle_change_selection">Choose episodes</string>
     <string name="shuffle_badge">Episode shuffle enabled</string>
+
+    <!-- Subtitle AutoSync -->
+    <string name="autosync_setting_title">Auto Sync Subtitles</string>
+    <string name="autosync_setting_description">Match the selected add-on subtitle to the timing of the subtitles embedded in the video.</string>
+    <string name="autosync_tolerance_title">Auto Sync Tolerance</string>
+    <string name="autosync_tolerance_description">Keep the original timing when the correction needed is this small or smaller.</string>
+    <string name="autosync_tolerance_off">Off</string>
+    <string name="autosync_tolerance_value">%1$d ms</string>
+    <string name="autosync_thorough_title">Thorough Auto Sync Search</string>
+    <string name="autosync_thorough_description">Keep comparing other subtitles and embedded tracks for a closer match before syncing. When off, the first strong match is used sooner. Only confident matches are ever applied.</string>
+    <string name="autosync_toast_failed">Sync failed: Auto Sync couldn\'t match this subtitle to the video.</string>
+    <string name="autosync_toast_failed_no_reference">Sync failed: this video has no embedded subtitles to compare with.</string>
+    <string name="autosync_toast_failed_unsupported">Sync failed: Auto Sync doesn\'t support this subtitle format.</string>
+    <string name="autosync_label_synced">Auto synced</string>
 </resources>

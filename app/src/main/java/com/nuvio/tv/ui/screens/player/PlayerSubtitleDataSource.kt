@@ -31,9 +31,8 @@ internal sealed interface SubtitleRequestTarget {
  * than sent with the stream's headers. Everything else, including non-HTTP subtitles, goes to media.
  */
 internal fun subtitleRequestTarget(uri: String, routes: Map<String, SubtitleRoute>): SubtitleRequestTarget {
-    val isHttp = uri.startsWith("http://", ignoreCase = true) || uri.startsWith("https://", ignoreCase = true)
-    if (!isHttp) return SubtitleRequestTarget.Media
     routes[uri]?.takeIf { it.url.toHttpUrlOrNull() != null }?.let { return SubtitleRequestTarget.Routed(it) }
+    val isHttp = uri.startsWith("http://", ignoreCase = true) || uri.startsWith("https://", ignoreCase = true)
     val isMarked = SUBTITLE_URI_MARKER in uri.substringBefore('#').substringAfter('?', "").split('&')
     return if (isHttp && isMarked) SubtitleRequestTarget.Refused else SubtitleRequestTarget.Media
 }

@@ -24,15 +24,6 @@ class SubtitleRoutingTest {
     }
 
     @Test
-    fun `synchronized local subtitle uri does not download the original remote route`() {
-        val synchronizedUri = "content://com.nuvio.tv.fileprovider/subtitle_sync/retimed.srt"
-        assertEquals(
-            SubtitleRequestTarget.Media,
-            subtitleRequestTarget(synchronizedUri, mapOf(synchronizedUri to route))
-        )
-    }
-
-    @Test
     fun `a marked http subtitle uri without a route is refused, not sent to media`() {
         assertEquals(SubtitleRequestTarget.Refused, subtitleRequestTarget("https://other.example/b.ass?nuvio_type=subtitle", routes))
         assertEquals(SubtitleRequestTarget.Refused, subtitleRequestTarget("HTTP://other.example/b.ass?x=1&nuvio_type=subtitle#f", routes))

@@ -3,7 +3,6 @@ package com.nuvio.tv.ui.screens.player
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
-import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import com.nuvio.tv.domain.model.Subtitle
@@ -411,35 +410,6 @@ internal fun PlayerRuntimeController.addonSubtitleKey(subtitle: Subtitle): Strin
     return "${subtitle.id}|${subtitle.url}"
 }
 
-internal fun PlayerRuntimeController.synchronizedSubtitleOverrideFor(
-    subtitle: Subtitle
-): SynchronizedSubtitleOverride? {
-    val subtitleKey = addonSubtitleKey(subtitle)
-    return synchronizedSubtitleOverride?.takeIf {
-        it.subtitleKey == subtitleKey &&
-            it.streamUrl == currentStreamUrl &&
-            it.contentIdentity == currentSubtitleContentIdentity()
-    }
-}
-
-internal fun PlayerRuntimeController.currentSubtitleContentIdentity(): String = listOf(
-    contentId.orEmpty(),
-    contentType.orEmpty(),
-    currentVideoId.orEmpty(),
-    currentSeason?.toString().orEmpty(),
-    currentEpisode?.toString().orEmpty(),
-    currentFilename.orEmpty(),
-    currentInfoHash.orEmpty(),
-    currentFileIdx?.toString().orEmpty()
-).joinToString("|")
-
-internal data class SynchronizedSubtitleOverride(
-    val subtitleKey: String,
-    val streamUrl: String,
-    val contentIdentity: String,
-    val uri: android.net.Uri,
-    val document: SrtDocument
-)
 /** Routes for [SubtitleRoutingDataSourceFactory], keyed by configuration URI. When subtitles share a URI, the first route is used. */
 internal fun PlayerRuntimeController.subtitleRoutes(subtitles: List<Subtitle>): Map<String, SubtitleRoute> =
     buildMap {
@@ -451,17 +421,11 @@ internal fun PlayerRuntimeController.subtitleRoutes(subtitles: List<Subtitle>): 
 
 internal fun PlayerRuntimeController.toSubtitleConfiguration(subtitle: Subtitle): MediaItem.SubtitleConfiguration {
     val normalizedLang = PlayerSubtitleUtils.normalizeLanguageCode(subtitle.lang)
-    val localOverride = synchronizedSubtitleOverrideFor(subtitle)?.takeIf {
-        _uiState.value.selectedAddonSubtitle?.let(::addonSubtitleKey) == it.subtitleKey
-    }
-    val subtitleMimeType = if (localOverride != null) {
-        MimeTypes.APPLICATION_SUBRIP
-    } else {
-        PlayerSubtitleUtils.mimeTypeFromUrl(subtitle.url)
-    }
+    val subtitleMimeType = PlayerSubtitleUtils.mimeTypeFromUrl(subtitle.url)
     val addonTrackId = buildAddonSubtitleTrackId(subtitle)
     
-    val subtitleUri = localOverride?.uri ?: android.net.Uri.parse(subtitle.url).buildUpon()
+    val baseUri = android.net.Uri.parse(subtitle.url)
+    val subtitleUri = baseUri.buildUpon()
         .appendQueryParameter("nuvio_type", "subtitle")
         .build()
 
@@ -471,48 +435,6 @@ internal fun PlayerRuntimeController.toSubtitleConfiguration(subtitle: Subtitle)
         .setMimeType(subtitleMimeType)
         .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
         .build()
-}
-
-internal fun PlayerRuntimeController.reloadAddonSubtitlesForSync(subtitle: Subtitle) {
-    // The synchronized Exo track must become the sole subtitle renderer. Leaving the original
-    // sidecar ticker alive makes CueNormalizingTextOutput discard the Exo cues indefinitely.
-    stopSidecarAddonSubtitle(clearView = true)
-    val player = _exoPlayer ?: return
-    val normalizedLang = PlayerSubtitleUtils.normalizeLanguageCode(subtitle.lang)
-    val addonTrackId = buildAddonSubtitleTrackId(subtitle)
-    pendingAddonSubtitleLanguage = normalizedLang
-    pendingAddonSubtitleTrackId = addonTrackId
-    pendingAudioSelectionAfterSubtitleRefresh = captureCurrentAudioSelectionForSubtitleRefresh(player)
-    val allSubtitles = listOf(subtitle)
-    attachedAddonSubtitleKeys = allSubtitles.map(::addonSubtitleKey).toSet()
-    val currentPosition = player.currentPosition
-    val playWhenReady = player.playWhenReady
-    val playbackSpeed = player.playbackParameters.speed
-
-    // Prevent stale or same-language embedded cues from rendering while the synchronized
-    // sidecar source is replaced. onTracksChanged re-enables only the exact addon track ID.
-    player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
-        .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-        .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-        .build()
-    player.setMediaSource(
-        mediaSourceFactory.createMediaSource(
-            context = context,
-            url = currentStreamUrl,
-            headers = currentHeaders,
-            subtitleConfigurations = allSubtitles.map(::toSubtitleConfiguration),
-            subtitleRoutes = subtitleRoutes(allSubtitles),
-            filename = currentFilename,
-            responseHeaders = currentStreamResponseHeaders,
-            mimeTypeOverride = currentStreamMimeType,
-            audioDelayUsProvider = audioDelayUs::get,
-            mediaMetadata = buildMediaSessionMetadata()
-        ),
-        currentPosition
-    )
-    player.prepare()
-    player.setPlaybackSpeed(playbackSpeed)
-    player.playWhenReady = playWhenReady
 }
 
 internal fun PlayerRuntimeController.selectAddonSubtitle(subtitle: Subtitle) {
@@ -572,27 +494,14 @@ internal fun PlayerRuntimeController.selectAddonSubtitle(subtitle: Subtitle) {
     _exoPlayer?.let { player ->
         val currentlySelected = _uiState.value.selectedAddonSubtitle
         if (currentlySelected?.id == subtitle.id && currentlySelected.url == subtitle.url) {
-            val synchronizedOverride = synchronizedSubtitleOverrideFor(subtitle)
-            if (synchronizedOverride != null) {
-                // A disabled/internal switch can leave the synchronized source selected in the
-                // UI while TEXT is disabled. Re-apply the exact Exo override, or rebuild the
-                // synchronized media source if the track is no longer attached.
-                stopSidecarAddonSubtitle(clearView = true)
-                if (!applyAddonSubtitleOverride(buildAddonSubtitleTrackId(subtitle))) {
-                    reloadAddonSubtitlesForSync(subtitle)
-                }
-            } else if (isSidecarAddonSubtitleActive()) {
-                // Re-assert sidecar paint if the same track is already selected via hot path.
+            // Re-assert sidecar paint if the same track is already selected via hot path.
+            if (isSidecarAddonSubtitleActive()) {
                 lastSidecarCueSignature = null
                 renderSidecarCuesAtCurrentPosition()
             }
             return@let
         }
         resetSubtitleAutoSyncState()
-        val synchronizedOverride = synchronizedSubtitleOverrideFor(subtitle)
-        if (synchronizedOverride == null) {
-            synchronizedSubtitleOverride = null
-        }
         val normalizedLang = PlayerSubtitleUtils.normalizeLanguageCode(subtitle.lang)
         val inferredMime = PlayerSubtitleUtils.mimeTypeFromUrl(subtitle.url)
         Log.d(
@@ -601,31 +510,6 @@ internal fun PlayerRuntimeController.selectAddonSubtitle(subtitle: Subtitle) {
                 "id=${subtitle.id} inferredMime=$inferredMime " +
                 "url=${subtitle.url}"
         )
-        val addonTrackId = buildAddonSubtitleTrackId(subtitle)
-
-        if (synchronizedOverride != null) {
-            Log.d(
-                PlayerRuntimeController.TAG,
-                "Selecting synchronized ADDON subtitle via Exo track addon=${subtitle.addonName} " +
-                    "id=${subtitle.id}"
-            )
-            stopSidecarAddonSubtitle(clearView = true)
-            _uiState.update {
-                it.copy(
-                    selectedAddonSubtitle = subtitle,
-                    selectedSubtitleTrackIndex = -1
-                )
-            }
-            val appliedWithoutReload = applyAddonSubtitleOverride(addonTrackId)
-            if (appliedWithoutReload) {
-                pendingAddonSubtitleLanguage = null
-                pendingAddonSubtitleTrackId = null
-                pendingAudioSelectionAfterSubtitleRefresh = null
-            } else {
-                reloadAddonSubtitlesForSync(subtitle)
-            }
-            return@let
-        }
 
         // Prefer sidecar hot-attach so progressive/VOD buffer is not wiped (fast-startup path)
         // and subtitles pass through SubtitleCharsetDetector, SubtitleMojibakeSanitizer, and RTL formatting.
@@ -650,6 +534,7 @@ internal fun PlayerRuntimeController.selectAddonSubtitle(subtitle: Subtitle) {
             return@let
         }
 
+        val addonTrackId = buildAddonSubtitleTrackId(subtitle)
         val preAttachedByStartup = attachedAddonSubtitleKeys.contains(addonSubtitleKey(subtitle))
         val appliedWithoutReload = applyAddonSubtitleOverride(addonTrackId) ||
             (preAttachedByStartup && applyAddonSubtitleOverrideByLanguage(normalizedLang))

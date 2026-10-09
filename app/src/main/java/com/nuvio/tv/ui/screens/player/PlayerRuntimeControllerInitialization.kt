@@ -79,7 +79,6 @@ import com.nuvio.tv.data.local.InternalPlayerEngine
 import com.nuvio.tv.data.local.PlayerSettings
 import com.nuvio.tv.data.repository.PlaybackIssueErrorInput
 import com.nuvio.tv.domain.model.Subtitle
-import com.nuvio.tv.ui.screens.player.autosync.EmbeddedSubtitleCueStore
 import io.github.peerless2012.ass.media.kt.buildWithAssSupport
 import io.github.peerless2012.ass.media.type.AssRenderType
 import kotlinx.coroutines.async
@@ -167,16 +166,6 @@ internal fun PlayerRuntimeController.initializePlayer(
             if (allowEngineFailover) {
                 startupEngineFailoverTriggered = false
             }
-            if (synchronizedSubtitleOverride?.streamUrl != url ||
-                synchronizedSubtitleOverride?.contentIdentity != currentSubtitleContentIdentity()
-            ) {
-                synchronizedSubtitleOverride = null
-            }
-            automaticSubtitleSyncJob?.cancel()
-            automaticSubtitleSyncJob = null
-            activeSubtitleReferenceScanner?.close()
-            activeSubtitleReferenceScanner = null
-            _uiState.update { it.copy(automaticSubtitleSyncRunning = false) }
             autoSubtitleSelected = false
             hasScannedTextTracksOnce = false
             lastPlaybackDiagnosticsForReport = LastPlaybackDiagnostics.EMPTY
@@ -900,12 +889,9 @@ internal fun PlayerRuntimeController.initializePlayer(
                 shouldStripSdhProvider = {
                     currentPlayerSettingsForReport.subtitleStyle.stripSdh
                 },
-                 isSidecarAddonSubtitleActiveProvider = {
-                     isSidecarAddonSubtitleActive()
-                 },
-                 onExoSubtitleCuesDeliveredProvider = {
-                     markExoSubtitleCuesDelivered()
-                 },
+                isSidecarAddonSubtitleActiveProvider = {
+                    isSidecarAddonSubtitleActive()
+                },
                 videoBoundsFractionProvider = {
                     val pv = exoPlayerView
                     if (pv != null) pv.videoBoundsFraction(videoAspectRatio) else null
@@ -969,14 +955,7 @@ internal fun PlayerRuntimeController.initializePlayer(
                         ),
                         stripDvRpu = stripDvRpuEnabled,
                         stripHdr10PlusSei = stripHdr10PlusSei
-                    )
-
-            subtitleReferenceCueStore.clear()
-            EmbeddedSubtitleCueStore.reset(url)
-            val subtitleCaptureExtractorsFactory = SubtitleReferenceCaptureExtractorsFactory(
-                delegate = effectiveExtractorsFactory,
-                store = subtitleReferenceCueStore
-            )
+                    ).let { autoSyncExtractorsFactory(it, url, headers) } // AutoSync hook
 
             setLoadingStatus(
                 phase = "building_player",
@@ -991,14 +970,14 @@ internal fun PlayerRuntimeController.initializePlayer(
                 // conversion never runs. (The libass path wires it via buildWithAssSupportCompat.)
                 mediaSourceFactory.configureSubtitleParsing(
                     // Always wire the Matroska factory — DTS-HD sniff must not depend on DV.
-                    extractorsFactory = subtitleCaptureExtractorsFactory,
+                    extractorsFactory = effectiveExtractorsFactory,
                     subtitleParserFactory = null
                 )
                 val playerDataSourceFactory = PlayerPlaybackNetworking.createDataSourceFactory(context, headers)
                 ExoPlayer.Builder(context)
                     .setBandwidthMeter(bandwidthMeter)
                     .setTrackSelector(trackSelector!!)
-                    .setMediaSourceFactory(DefaultMediaSourceFactory(playerDataSourceFactory, subtitleCaptureExtractorsFactory))
+                    .setMediaSourceFactory(DefaultMediaSourceFactory(playerDataSourceFactory, effectiveExtractorsFactory))
                     .setRenderersFactory(renderersFactory)
                     .setLoadControl(loadControl)
                     .setReleaseTimeoutMs(PLAYER_RELEASE_TIMEOUT_MS)
@@ -1024,9 +1003,6 @@ internal fun PlayerRuntimeController.initializePlayer(
                         playerMediaSourceFactory = mediaSourceFactory,
                         dataSourceFactory = playerDataSourceFactory,
                         extractorsFactory = effectiveExtractorsFactory,
-                        extractorsFactoryDecorator = { factory ->
-                            SubtitleReferenceCaptureExtractorsFactory(factory, subtitleReferenceCueStore)
-                        },
                         renderersFactory = renderersFactory
                     )
             } else {
@@ -2084,29 +2060,7 @@ internal suspend fun PlayerRuntimeController.prepareStreamStartSubtitles(
         libassPipelineSwitchInFlight = false
         hasDetectedAssSsaTrackForCurrentStream = false
     }
-    val synchronizedAddonSubtitle = _uiState.value.selectedAddonSubtitle
-        ?.takeIf {
-            !subtitleDisabledByPersistedPreference &&
-                synchronizedSubtitleOverrideFor(it) != null
-        }
     resetAddonSubtitleStateForNewStream()
-    if (synchronizedAddonSubtitle != null) {
-        autoSubtitleSelected = true
-        pendingAddonSubtitleLanguage =
-            PlayerSubtitleUtils.normalizeLanguageCode(synchronizedAddonSubtitle.lang)
-        pendingAddonSubtitleTrackId = buildAddonSubtitleTrackId(synchronizedAddonSubtitle)
-        _uiState.update {
-            it.copy(
-                selectedAddonSubtitle = synchronizedAddonSubtitle,
-                selectedSubtitleTrackIndex = -1
-            )
-        }
-        return StartupSubtitlePreparation(
-            fetchedSubtitles = emptyList(),
-            attachedSubtitles = listOf(synchronizedAddonSubtitle),
-            fetchCompleted = false
-        )
-    }
     return prepareStartupSubtitles()
 }
 
@@ -2189,7 +2143,6 @@ private class SubtitleOffsetRenderersFactory(
     private val shouldNormalizeCuePositionProvider: () -> Boolean,
     private val shouldStripSdhProvider: () -> Boolean,
     private val isSidecarAddonSubtitleActiveProvider: () -> Boolean = { false },
-    private val onExoSubtitleCuesDeliveredProvider: () -> Unit = {},
     private val videoBoundsFractionProvider: () -> RectF?,
     private val gainAudioProcessor: GainAudioProcessor,
     private val downmixEnabled: Boolean,
@@ -2319,7 +2272,6 @@ private class SubtitleOffsetRenderersFactory(
             delegate = SdhFilteringTextOutput(output, shouldStripSdhProvider),
             shouldNormalizeCuePositionProvider = shouldNormalizeCuePositionProvider,
             isSidecarAddonSubtitleActiveProvider = isSidecarAddonSubtitleActiveProvider,
-            onExoSubtitleCuesDeliveredProvider = onExoSubtitleCuesDeliveredProvider,
             videoBoundsFractionProvider = videoBoundsFractionProvider
         )
         val startIndex = out.size
@@ -2369,7 +2321,6 @@ private class CueNormalizingTextOutput(
     private val delegate: TextOutput,
     private val shouldNormalizeCuePositionProvider: () -> Boolean,
     private val isSidecarAddonSubtitleActiveProvider: () -> Boolean,
-    private val onExoSubtitleCuesDeliveredProvider: () -> Unit,
     private val videoBoundsFractionProvider: () -> RectF?
 ) : TextOutput {
 
@@ -2377,7 +2328,6 @@ private class CueNormalizingTextOutput(
         if (isSidecarAddonSubtitleActiveProvider()) {
             return
         }
-        onExoSubtitleCuesDeliveredProvider()
         val cues = cueGroup.cues
         if (cues.isEmpty()) {
             delegate.onCues(cueGroup)
@@ -2410,7 +2360,6 @@ private class CueNormalizingTextOutput(
         if (isSidecarAddonSubtitleActiveProvider()) {
             return
         }
-        onExoSubtitleCuesDeliveredProvider()
         if (cues.isEmpty()) {
             delegate.onCues(cues)
             return

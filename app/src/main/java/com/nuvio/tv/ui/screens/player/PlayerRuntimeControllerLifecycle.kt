@@ -44,14 +44,7 @@ internal fun PlayerRuntimeController.releasePlayer(flushPlaybackState: Boolean) 
     hidePlayerEngineSwitchInfoJob?.cancel()
     hideSubtitleDelayOverlayJob?.cancel()
     subtitleAutoSyncLoadJob?.cancel()
-    automaticSubtitleSyncJob?.cancel()
-    automaticSubtitleSyncJob = null
-    activeSubtitleReferenceScanner?.close()
-    activeSubtitleReferenceScanner = null
-    // Captured cues are only meaningful for the stream that produced them, and a full track's
-    // worth of them stayed resident until the next player build without this.
-    subtitleReferenceCueStore.clear()
-    _uiState.update { it.copy(automaticSubtitleSyncRunning = false) }
+    cancelAutomaticSubtitleSync() // AutoSync hook
     stopSidecarAddonSubtitle(clearView = true)
     subtitleTimingRefreshJob?.cancel()
     subtitleTimingRefreshJob = null
@@ -63,6 +56,7 @@ internal fun PlayerRuntimeController.releasePlayer(flushPlaybackState: Boolean) 
     mpvMediaLoadPrepared = false
     nextEpisodeAutoPlayJob?.cancel()
     nextEpisodeAutoPlayJob = null
+    cancelNextEpisodePreload()
     debridResolveJob?.cancel()
     debridResolveJob = null
     stillWatchingPromptJob?.cancel()
@@ -71,6 +65,8 @@ internal fun PlayerRuntimeController.releasePlayer(flushPlaybackState: Boolean) 
     errorRetryJob = null
     stableProgressResetJob?.cancel()
     stableProgressResetJob = null
+    mpvStableProgressResetJob?.cancel()
+    mpvStableProgressResetJob = null
     releaseMpvPlayer()
     _exoPlayer?.let { player ->
         runCatching { player.playWhenReady = false }
