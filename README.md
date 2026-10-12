@@ -27,6 +27,23 @@ cd NuvioTV
 
 Nuvio TV is built with Kotlin, Jetpack Compose, TV Material 3, and Media3. Development requires Android Studio, a JDK, and the Android SDK.
 
+## Phone approval for locked profiles
+
+In **Settings → Profiles → Manage Profiles**, open a profile's options and choose
+**Phone approval**. After the profile PIN check (when enabled), scan the QR code
+with the phone camera and subscribe to the topic in ntfy or its web/PWA app.
+Selecting **Approve with phone** on the TV sends a two-minute unlock request
+with **Yes** and **No** actions; the normal PIN unlock always remains available.
+Pairing is local to this TV/profile and is removed when the profile is deleted or
+the account is reset.
+
+Direct ntfy transport is a bearer capability: anyone who obtains the QR code or
+topic can subscribe and approve or deny requests for that profile. Nuvio does
+not provide an ACL through ntfy, so treat the QR/topic like a secret and
+regenerate it if it is exposed. Requests use fresh response topics/tokens,
+accept only the first matching response, and fail closed after cancellation,
+backgrounding, profile changes, or timeout.
+
 ## Minimal fork
 
 `juva99/NuvioTV` is aligned with upstream's published `1.1.0-beta.5` tag.
