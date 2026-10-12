@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.core.profileapproval.NtfyApprovalOutcome
 import com.nuvio.tv.core.profileapproval.NtfyProfileApprovalService
+import com.nuvio.tv.core.profileapproval.PhoneApprovalPairingAction
 import com.nuvio.tv.core.sync.ProfileSettingsSyncService
 import com.nuvio.tv.core.sync.ProfileSyncService
 import com.nuvio.tv.core.sync.SetProfilePinResult
@@ -22,6 +23,7 @@ import com.nuvio.tv.domain.model.UserProfile
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -46,14 +48,7 @@ sealed interface CreateProfileResult {
     data object Failed : CreateProfileResult
 }
 
-sealed interface PhoneApprovalState {
-    data object Idle : PhoneApprovalState
-    data class Waiting(val profileId: Int) : PhoneApprovalState
-    data class Denied(val profileId: Int) : PhoneApprovalState
-    data class TimedOut(val profileId: Int) : PhoneApprovalState
-    data class Failed(val profileId: Int) : PhoneApprovalState
-    data class RateLimited(val profileId: Int, val retryAfterSeconds: Int) : PhoneApprovalState
-}
+data class PhoneApprovalState(val profileId: Int, val outcome: NtfyApprovalOutcome? = null)
 
 @HiltViewModel
 class ProfileSelectionViewModel @Inject constructor(
@@ -114,13 +109,20 @@ class ProfileSelectionViewModel @Inject constructor(
         }
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
-    private val _phoneApprovalState = MutableStateFlow<PhoneApprovalState>(PhoneApprovalState.Idle)
-    val phoneApprovalState: StateFlow<PhoneApprovalState> = _phoneApprovalState.asStateFlow()
+    private val _phoneApprovalState = MutableStateFlow<PhoneApprovalState?>(null)
+    val phoneApprovalState: StateFlow<PhoneApprovalState?> = _phoneApprovalState.asStateFlow()
     private var phoneApprovalJob: Job? = null
     private var phoneApprovalGeneration = 0L
 
     init {
         refreshProfilePinStates()
+        viewModelScope.launch {
+            profiles.collectLatest { profileList ->
+                profileList.forEach { profile ->
+                    profileSettingsSyncService.revalidatePhoneApprovalPairing(profile.id)
+                }
+            }
+        }
         viewModelScope.launch {
             hasProfileAvatarAccess.collectLatest { hasAccess ->
                 loadAvatarCatalog(hasAccess)
@@ -293,36 +295,13 @@ class ProfileSelectionViewModel @Inject constructor(
         }
     }
 
-    fun ensurePhoneApprovalPairing(
+    fun updatePhoneApprovalPairing(
         profileId: Int,
-        onComplete: (Result<String>) -> Unit
+        action: PhoneApprovalPairingAction,
+        onComplete: (Result<String?>) -> Unit
     ) {
         viewModelScope.launch {
-            onComplete(runCatching {
-                profileSettingsSyncService.ensurePhoneApprovalPairing(profileId).getOrThrow()
-            })
-        }
-    }
-
-    fun regeneratePhoneApprovalPairing(
-        profileId: Int,
-        onComplete: (Result<String>) -> Unit
-    ) {
-        viewModelScope.launch {
-            onComplete(runCatching {
-                profileSettingsSyncService.regeneratePhoneApprovalPairing(profileId).getOrThrow()
-            })
-        }
-    }
-
-    fun disablePhoneApprovalPairing(
-        profileId: Int,
-        onComplete: (Result<Unit>) -> Unit
-    ) {
-        viewModelScope.launch {
-            onComplete(runCatching {
-                profileSettingsSyncService.disablePhoneApprovalPairing(profileId).getOrThrow()
-            })
+            onComplete(profileSettingsSyncService.updatePhoneApprovalPairing(profileId, action))
         }
     }
 
@@ -331,43 +310,21 @@ class ProfileSelectionViewModel @Inject constructor(
         val profile = profiles.value.firstOrNull { it.id == profileId } ?: return
         val generation = ++phoneApprovalGeneration
         phoneApprovalJob = viewModelScope.launch {
-            _phoneApprovalState.value = PhoneApprovalState.Waiting(profileId)
+            _phoneApprovalState.value = PhoneApprovalState(profileId)
             try {
-                when (val outcome = ntfyProfileApprovalService.requestUnlock(profileId, profile.name)) {
-                    NtfyApprovalOutcome.Approved -> {
-                        if (generation != phoneApprovalGeneration) return@launch
-                        _phoneApprovalState.value = PhoneApprovalState.Idle
-                        onApproved()
-                    }
-                    NtfyApprovalOutcome.Denied -> {
-                        if (generation != phoneApprovalGeneration) return@launch
-                        _phoneApprovalState.value = PhoneApprovalState.Denied(profileId)
-                    }
-                    NtfyApprovalOutcome.TimedOut -> {
-                        if (generation != phoneApprovalGeneration) return@launch
-                        _phoneApprovalState.value = PhoneApprovalState.TimedOut(profileId)
-                    }
-                    is NtfyApprovalOutcome.RateLimited -> {
-                        if (generation != phoneApprovalGeneration) return@launch
-                        _phoneApprovalState.value = PhoneApprovalState.RateLimited(
-                            profileId,
-                            outcome.retryAfterSeconds
-                        )
-                    }
-                    NtfyApprovalOutcome.NotConfigured,
-                    NtfyApprovalOutcome.Busy,
-                    NtfyApprovalOutcome.Failed -> {
-                        if (generation != phoneApprovalGeneration) return@launch
-                        _phoneApprovalState.value = PhoneApprovalState.Failed(profileId)
-                    }
+                val outcome = ntfyProfileApprovalService.requestUnlock(profileId, profile.name)
+                coroutineContext.ensureActive()
+                if (generation != phoneApprovalGeneration) return@launch
+                _phoneApprovalState.value = PhoneApprovalState(profileId, outcome)
+                if (outcome == NtfyApprovalOutcome.Approved) {
+                    _phoneApprovalState.value = null
+                    onApproved()
                 }
             } catch (error: CancellationException) {
                 throw error
             } finally {
                 if (generation == phoneApprovalGeneration) {
-                    if (_phoneApprovalState.value is PhoneApprovalState.Waiting) {
-                        _phoneApprovalState.value = PhoneApprovalState.Idle
-                    }
+                    if (_phoneApprovalState.value?.outcome == null) _phoneApprovalState.value = null
                     phoneApprovalJob = null
                 }
             }
@@ -379,18 +336,13 @@ class ProfileSelectionViewModel @Inject constructor(
         ntfyProfileApprovalService.cancelActiveRequest()
         phoneApprovalJob?.cancel()
         phoneApprovalJob = null
-        _phoneApprovalState.value = PhoneApprovalState.Idle
+        _phoneApprovalState.value = null
     }
 
     fun clearPhoneApprovalState() {
         if (phoneApprovalJob?.isActive != true) {
-            _phoneApprovalState.value = PhoneApprovalState.Idle
+            _phoneApprovalState.value = null
         }
-    }
-
-    override fun onCleared() {
-        ntfyProfileApprovalService.cancelActiveRequest()
-        super.onCleared()
     }
 
     fun refreshProfilePinStates() {

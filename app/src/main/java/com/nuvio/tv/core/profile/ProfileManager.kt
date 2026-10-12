@@ -2,7 +2,6 @@ package com.nuvio.tv.core.profile
 
 import android.content.Context
 import com.nuvio.tv.R
-import com.nuvio.tv.data.local.ProfileApprovalPairingDataStore
 import com.nuvio.tv.data.local.ProfileDataStore
 import com.nuvio.tv.data.local.ProfileDataStoreFactory
 import com.nuvio.tv.domain.model.UserProfile
@@ -25,7 +24,6 @@ class ProfileManager @Inject constructor(
     private val profileDataStore: ProfileDataStore,
     private val factory: ProfileDataStoreFactory,
     private val credentialStores: Set<@JvmSuppressWildcards ProfileScopedCredentialStore>,
-    private val profileApprovalPairingDataStore: ProfileApprovalPairingDataStore,
     @ApplicationContext private val context: Context
 ) {
     companion object {
@@ -116,7 +114,6 @@ class ProfileManager @Inject constructor(
     suspend fun deleteProfile(id: Int): Boolean {
         if (id == 1) return false
         if (profiles.value.none { it.id == id }) return false
-        profileApprovalPairingDataStore.removeProfile(id)
         credentialStores.forEach { store -> store.removeProfile(id) }
         deleteProfileDataAsync(id)
         profileDataStore.deleteProfile(id)

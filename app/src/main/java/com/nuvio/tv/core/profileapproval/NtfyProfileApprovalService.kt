@@ -1,17 +1,16 @@
 package com.nuvio.tv.core.profileapproval
 
 import android.content.Context
+import android.util.Log
 import com.nuvio.tv.core.auth.AuthManager
 import com.nuvio.tv.core.auth.currentDeviceClientMetadata
 import com.nuvio.tv.core.sync.ProfileSettingsSyncService
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
@@ -23,7 +22,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import okio.BufferedSource
 import java.io.IOException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -48,221 +46,131 @@ class NtfyProfileApprovalService @Inject constructor(
     private val authManager: AuthManager,
     @ApplicationContext private val context: Context
 ) {
-    private val activeRequestLock = Any()
+    private val requestLock = Any()
     private var activeRequest: ActiveRequest? = null
     private val retryGate = NtfyApprovalRetryGate()
-    private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun requestUnlock(profileId: Int, profileName: String): NtfyApprovalOutcome {
         val accountId = authManager.currentUserId ?: return NtfyApprovalOutcome.Failed
-        val pairingResult = profileSettingsSyncService
-            .revalidatePhoneApprovalPairing(profileId)
-        if (authManager.currentUserId != accountId) return NtfyApprovalOutcome.Failed
-        if (pairingResult.isFailure) return NtfyApprovalOutcome.Failed
-        val profileTopic = pairingResult.getOrNull()
-            ?: return NtfyApprovalOutcome.NotConfigured
-        val request = synchronized(activeRequestLock) {
+        val job = currentCoroutineContext()[Job]
+        val request = synchronized(requestLock) {
             if (activeRequest != null) return NtfyApprovalOutcome.Busy
-            val retryAfterMs = retryGate.checkAndRecord(
-                profileId = profileId,
-                nowMs = android.os.SystemClock.elapsedRealtime()
-            )
+            val retryAfterMs = retryGate.checkAndRecord(profileId, android.os.SystemClock.elapsedRealtime())
             if (retryAfterMs > 0L) {
-                return NtfyApprovalOutcome.RateLimited(
-                    retryAfterSeconds = ((retryAfterMs + 999L) / 1_000L).toInt()
-                )
+                return NtfyApprovalOutcome.RateLimited(((retryAfterMs + 999L) / 1_000L).toInt())
             }
-            ActiveRequest(
-                profileId = profileId,
-                profileTopic = profileTopic,
-                accountId = accountId,
-                responseTopic = NtfyProfileApprovalPolicy.generateResponseTopic(),
-                responseToken = NtfyProfileApprovalPolicy.generateResponseToken()
-            ).also { activeRequest = it }
+            ActiveRequest(job).also { activeRequest = it }
         }
-
         return try {
-            val outcome = withTimeout(NtfyProfileApprovalPolicy.REQUEST_TIMEOUT_MS) {
-                executeRequest(request, profileName)
-            }
-            if (outcome != NtfyApprovalOutcome.Approved) {
-                outcome
-            } else {
-                if (authManager.currentUserId != request.accountId) {
-                    NtfyApprovalOutcome.Failed
+            withTimeout(NtfyProfileApprovalPolicy.REQUEST_TIMEOUT_MS) {
+                val profileTopic = profileSettingsSyncService.revalidatePhoneApprovalPairing(profileId)
+                    .getOrThrow() ?: return@withTimeout NtfyApprovalOutcome.NotConfigured
+                if (authManager.currentUserId != accountId) return@withTimeout NtfyApprovalOutcome.Failed
+                val outcome = executeRequest(request, profileName, profileTopic)
+                if (outcome != NtfyApprovalOutcome.Approved) return@withTimeout outcome
+                if (authManager.currentUserId != accountId) return@withTimeout NtfyApprovalOutcome.Failed
+                val currentTopic = profileSettingsSyncService.revalidatePhoneApprovalPairing(profileId)
+                    .getOrThrow()
+                if (authManager.currentUserId == accountId && currentTopic == profileTopic) {
+                    NtfyApprovalOutcome.Approved
                 } else {
-                    val currentTopic = profileSettingsSyncService
-                        .revalidatePhoneApprovalPairing(request.profileId)
-                        .getOrNull()
-                    if (
-                        authManager.currentUserId == request.accountId &&
-                        currentTopic == request.profileTopic
-                    ) {
-                        NtfyApprovalOutcome.Approved
-                    } else {
-                        NtfyApprovalOutcome.Failed
-                    }
+                    NtfyApprovalOutcome.Failed
                 }
             }
         } catch (_: TimeoutCancellationException) {
             NtfyApprovalOutcome.TimedOut
-        } catch (error: kotlinx.coroutines.CancellationException) {
+        } catch (error: CancellationException) {
             throw error
-        } catch (_: Exception) {
-            // Never log exceptions here: OkHttp exceptions can contain the
-            // response topic, which is a live bearer capability.
+        } catch (error: Exception) {
+            // Exception messages/URLs can contain bearer capabilities.
+            Log.w("NtfyProfileApproval", "Phone approval failed (${error.javaClass.simpleName})")
             NtfyApprovalOutcome.Failed
         } finally {
-            request.responseCall?.cancel()
-            request.publishCall?.cancel()
-            synchronized(activeRequestLock) {
-                if (activeRequest === request) {
-                    activeRequest = null
-                }
+            request.cancelCalls()
+            synchronized(requestLock) {
+                if (activeRequest === request) activeRequest = null
             }
         }
     }
 
     fun cancelActiveRequest() {
-        synchronized(activeRequestLock) {
-            activeRequest?.responseCall?.cancel()
-            activeRequest?.publishCall?.cancel()
+        synchronized(requestLock) {
+            activeRequest?.job?.cancel()
+            activeRequest?.cancelCalls()
         }
     }
 
     private suspend fun executeRequest(
         request: ActiveRequest,
-        profileName: String
-    ): NtfyApprovalOutcome {
-        val cancellationHandle = currentCoroutineContext()[Job]?.invokeOnCompletion {
-            request.responseCall?.cancel()
-            request.publishCall?.cancel()
-        }
-        val subscriptionRequest = Request.Builder()
-            .url("${NtfyProfileApprovalPolicy.responseTopicUrl(request.responseTopic)}/json")
-            .header("Accept", "application/x-ndjson")
-            .build()
-        try {
-            val (call, response) = openSubscription(request, subscriptionRequest)
-            try {
-                currentCoroutineContext().ensureActive()
-                publishUnlockRequest(
-                    request = request,
-                    profileName = profileName,
-                    deviceName = currentDeviceClientMetadata(context).deviceName
-                )
-                val source = response.body?.source() ?: throw IOException("Missing ntfy response body")
-                return withContext(Dispatchers.IO) {
-                    readFirstMatchingResponse(source, request)
-                }
-            } finally {
-                response.close()
-                call.cancel()
-            }
-        } finally {
-            cancellationHandle?.dispose()
-        }
-    }
-
-    private suspend fun openSubscription(
-        request: ActiveRequest,
-        subscriptionRequest: Request
-    ): Pair<Call, Response> = suspendCancellableCoroutine { continuation ->
-        val call = client.newCall(subscriptionRequest)
-        request.responseCall = call
-        continuation.invokeOnCancellation { call.cancel() }
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                if (continuation.isActive) {
-                    continuation.resumeWithException(IOException("ntfy subscription failed"))
-                }
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                if (!response.isSuccessful || response.body == null) {
-                    response.close()
-                    if (continuation.isActive) {
-                        continuation.resumeWithException(IOException("ntfy subscription rejected"))
-                    }
-                } else if (continuation.isActive) {
-                    continuation.resume(call to response)
-                } else {
-                    response.close()
-                    call.cancel()
-                }
-            }
-        })
-    }
-
-    private suspend fun publishUnlockRequest(
-        request: ActiveRequest,
         profileName: String,
-        deviceName: String
-    ) = withContext(Dispatchers.IO) {
-        val body = NtfyProfileApprovalPolicy.buildNotificationJson(
-            profileName = profileName,
-            profileTopic = request.profileTopic,
-            responseTopic = request.responseTopic,
-            responseToken = request.responseToken,
-            deviceName = deviceName
-        ).toRequestBody(JSON_MEDIA_TYPE)
-        val publishRequest = Request.Builder()
-            .url(NtfyProfileApprovalPolicy.NTFY_BASE_URL)
-            .header("Content-Type", "application/json")
-            .post(body)
-            .build()
-        val call = client.newCall(publishRequest)
-        request.publishCall = call
-        call.execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IOException("ntfy publish rejected")
-            }
-        }
-        request.publishCall = null
-    }
-
-    private suspend fun readFirstMatchingResponse(
-        source: BufferedSource,
-        request: ActiveRequest
+        profileTopic: String
     ): NtfyApprovalOutcome {
-        while (true) {
-            currentCoroutineContext().ensureActive()
-            val line = source.readUtf8Line() ?: throw IOException("ntfy stream closed")
-            if (line.isBlank()) continue
-            val parsed = runCatching {
-                val message = json.parseToJsonElement(line).jsonObject
-                if (message["event"]?.jsonPrimitive?.content != "message") return@runCatching null
-                if (message["topic"]?.jsonPrimitive?.content != request.responseTopic) {
-                    return@runCatching null
+        val notification = NtfyProfileApprovalPolicy.buildNotificationJson(
+            profileName, profileTopic, request.responseTopic, request.responseToken,
+            currentDeviceClientMetadata(context).deviceName
+        ).toRequestBody("application/json; charset=utf-8".toMediaType())
+        return suspendCancellableCoroutine { continuation ->
+            val call = client.newCall(Request.Builder()
+                .url("${NtfyProfileApprovalPolicy.responseTopicUrl(request.responseTopic)}/json")
+                .build())
+            request.responseCall = call
+            continuation.invokeOnCancellation { request.cancelCalls() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (continuation.isActive) continuation.resumeWithException(e)
                 }
-                val messageId = message["id"]?.jsonPrimitive?.content ?: return@runCatching null
-                if (!request.seenMessageIds.add(messageId)) return@runCatching null
-                val body = message["message"]?.jsonPrimitive?.content ?: return@runCatching null
-                NtfyProfileApprovalPolicy.parseResponsePayload(body, request.responseToken)
-            }.getOrNull() ?: continue
 
-            return when (parsed) {
-                NtfyApprovalDecision.YES -> NtfyApprovalOutcome.Approved
-                NtfyApprovalDecision.NO -> NtfyApprovalOutcome.Denied
-            }
+                override fun onResponse(call: Call, response: Response) {
+                    try {
+                        response.use {
+                            check(response.isSuccessful) { "ntfy subscription rejected" }
+                            val source = response.body?.source() ?: error("Missing ntfy response body")
+                            val publish = client.newCall(Request.Builder()
+                                .url(NtfyProfileApprovalPolicy.NTFY_BASE_URL)
+                                .post(notification)
+                                .build())
+                            request.publishCall = publish
+                            if (!continuation.isActive) {
+                                publish.cancel()
+                                return
+                            }
+                            publish.execute().use { check(it.isSuccessful) { "ntfy publish rejected" } }
+                            while (continuation.isActive) {
+                                val line = source.readUtf8Line() ?: error("ntfy stream closed")
+                                val decision = runCatching {
+                                    val message = Json.parseToJsonElement(line).jsonObject
+                                    if (message["event"]?.jsonPrimitive?.content != "message" ||
+                                        message["topic"]?.jsonPrimitive?.content != request.responseTopic
+                                    ) return@runCatching null
+                                    NtfyProfileApprovalPolicy.parseResponsePayload(
+                                        message["message"]?.jsonPrimitive?.content.orEmpty(),
+                                        request.responseToken
+                                    )
+                                }.getOrNull() ?: continue
+                                continuation.resume(
+                                    if (decision == NtfyApprovalDecision.YES) NtfyApprovalOutcome.Approved
+                                    else NtfyApprovalOutcome.Denied
+                                )
+                                return
+                            }
+                        }
+                    } catch (error: Exception) {
+                        if (continuation.isActive) continuation.resumeWithException(error)
+                    }
+                }
+            })
         }
     }
 
-    private class ActiveRequest(
-        val profileId: Int,
-        val profileTopic: String,
-        val accountId: String,
-        val responseTopic: String,
-        val responseToken: String
-    ) {
-        @Volatile
-        var responseCall: Call? = null
-        @Volatile
-        var publishCall: Call? = null
-        val seenMessageIds = mutableSetOf<String>()
-    }
+    private class ActiveRequest(val job: Job?) {
+        val responseTopic = NtfyProfileApprovalPolicy.generateResponseTopic()
+        val responseToken = NtfyProfileApprovalPolicy.generateResponseToken()
+        @Volatile var responseCall: Call? = null
+        @Volatile var publishCall: Call? = null
 
-    private companion object {
-        val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+        fun cancelCalls() {
+            responseCall?.cancel()
+            publishCall?.cancel()
+        }
     }
 }

@@ -26,6 +26,7 @@ import com.nuvio.tv.data.local.TmdbSettingsDataStore
 import com.nuvio.tv.data.remote.supabase.SupabaseProfileSetupCopyResult
 import com.nuvio.tv.data.remote.supabase.SupabaseProfileSettingsBlob
 import com.nuvio.tv.core.profileapproval.NtfyProfileApprovalPolicy
+import com.nuvio.tv.core.profileapproval.PhoneApprovalPairingAction
 import com.nuvio.tv.domain.model.DiscoverLocation
 import com.nuvio.tv.domain.repository.MetaRepository
 import io.github.jan.supabase.postgrest.Postgrest
@@ -70,7 +71,6 @@ private const val FOREGROUND_PULL_DELAY_MS = 2500L
 private const val FOREGROUND_PULL_MIN_INTERVAL_MS = 60_000L
 private const val SETTINGS_SYNC_PLATFORM = "tv"
 private const val PLAYER_SETTINGS_FEATURE = "player_settings"
-private const val PROFILE_APPROVAL_STABILIZATION_ATTEMPTS = 3
 
 private val catalogKeysExcludedFromProfileSettingsBlob = setOf(
     "home_catalog_order_keys",
@@ -208,8 +208,7 @@ class ProfileSettingsSyncService @Inject constructor(
         "trakt_settings",
         "debrid_settings",
         "animeskip_settings",
-        "track_preference",
-        PROFILE_APPROVAL_FEATURE
+        "track_preference"
     )
 
     init {
@@ -245,20 +244,15 @@ class ProfileSettingsSyncService @Inject constructor(
                 val profileId = profileManager.activeProfileId.value
                 val inheritedPluginSettingsApplied = pullInheritedPluginSettings(profileId)
                 val blob = pullProfileFromRemote(profileId)
+                profileApprovalPairingDataStore.setTopic(profileId, extractProfileApprovalTopic(blob))
                 lastForegroundPullAtMs = SystemClock.elapsedRealtime()
                 if (blob == null) {
-                    profileApprovalPairingDataStore.disable(profileId)
-                    skipNextPushSignature = buildSettingsSignature(profileId)
                     Log.d(TAG, "No remote profile settings blob for profile $profileId; keeping local settings")
                     return@withLock Result.success(inheritedPluginSettingsApplied)
                 }
 
                 val featuresJson = blob["features"]?.jsonObject
-                    ?: run {
-                        profileApprovalPairingDataStore.disable(profileId)
-                        skipNextPushSignature = buildSettingsSignature(profileId)
-                        return@withLock Result.success(inheritedPluginSettingsApplied)
-                    }
+                    ?: return@withLock Result.success(inheritedPluginSettingsApplied)
                 val remoteSignature = buildSettingsSignature(featuresJson)
                 val localSignature = buildSettingsSignature(profileId)
                 if (remoteSignature == localSignature) {
@@ -295,33 +289,14 @@ class ProfileSettingsSyncService @Inject constructor(
                         ) {
                             providerCredentialSyncService.syncFromRemote().getOrThrow()
                         }
-                        val targetBlobBeforeCopy = pullProfileFromRemote(targetProfileId)
-                        val targetApprovalTopic = extractProfileApprovalTopic(targetBlobBeforeCopy)
                         val sourceBlob = if (sourceProfileId == profileManager.activeProfileId.value) {
-                            val sourceApprovalTopic = extractProfileApprovalTopic(
-                                pullProfileFromRemote(sourceProfileId)
-                            )
-                            exportSettingsBlob(sourceProfileId)
-                                .let { blob ->
-                                    updateProfileApprovalTopic(blob, sourceApprovalTopic)
-                                }
-                                .also { blob ->
-                                    pushProfileToRemote(sourceProfileId, blob)
-                                }
+                            pushProfileToRemote(sourceProfileId)
                         } else {
                             pullProfileFromRemote(sourceProfileId)
-                                ?: exportSettingsBlob(sourceProfileId)
-                                    .let(::removeProfileApprovalFeature)
-                                    .also { blob ->
-                                        pushProfileToRemote(sourceProfileId, blob)
-                                    }
+                                ?: pushProfileToRemote(sourceProfileId)
                         }
                         require(sourceBlob["features"] is JsonObject)
 
-                        val sanitizedTargetBlob = updateProfileApprovalTopic(
-                            base = sourceBlob,
-                            topic = targetApprovalTopic
-                        )
                         if (copyProviderCredentials) {
                             val params = buildJsonObject {
                                 put("p_source_profile_id", sourceProfileId)
@@ -351,23 +326,10 @@ class ProfileSettingsSyncService @Inject constructor(
                                 )
                             )
                         }
-                        // TV settings are written only after pairing sanitization.
-                        pushProfileToRemote(targetProfileId, sanitizedTargetBlob)
-                        if (targetApprovalTopic == null) {
-                            profileApprovalPairingDataStore.disable(targetProfileId)
-                        } else {
-                            profileApprovalPairingDataStore.setTopic(
-                                targetProfileId,
-                                targetApprovalTopic
-                            )
-                        }
-                        sanitizedTargetBlob["features"]?.jsonObject
-                            ?: error("Sanitized TV settings are unavailable")
+                        pushProfileToRemote(targetProfileId, sourceBlob)["features"]?.jsonObject
+                            ?: error("Copied TV settings are unavailable")
                     } else {
-                        exportSettingsBlob(sourceProfileId)
-                            .let(::removeProfileApprovalFeature)
-                            .get("features")
-                            ?.jsonObject
+                        exportSettingsBlob(sourceProfileId)["features"]?.jsonObject
                             ?: error("Source TV settings are unavailable")
                     }
 
@@ -396,174 +358,61 @@ class ProfileSettingsSyncService @Inject constructor(
             }
         }
 
-    /**
-     * Reads an existing account/profile pairing or claims a random one through
-     * the existing settings blob RPCs. Those RPCs have no compare-and-swap
-     * primitive, so a competing first claim is rejected when detected rather
-     * than presented as a successful pairing.
-     */
-    suspend fun ensurePhoneApprovalPairing(profileId: Int): Result<String> =
+    suspend fun updatePhoneApprovalPairing(
+        profileId: Int,
+        action: PhoneApprovalPairingAction
+    ): Result<String?> =
         withContext(Dispatchers.IO) {
             syncMutex.withLock {
-                if (!authManager.isAuthenticated) {
-                    return@withLock Result.failure(
-                        IllegalStateException("Authenticated account required for phone approval")
-                    )
-                }
                 try {
-                    // Do not reuse a local value when the authenticated server
-                    // has no pairing. The local cache may belong to a previous
-                    // account with the same numeric profile ID.
-                    val candidate = NtfyProfileApprovalPolicy.generateProfileTopic()
-                    var attemptedInitialClaim = false
-                    var confirmedTopic: String? = null
-                    var attempts = 0
-                    while (attempts < PROFILE_APPROVAL_STABILIZATION_ATTEMPTS) {
-                        attempts++
-                        val currentBlob = pullProfileFromRemote(profileId)
-                        val currentTopic = extractProfileApprovalTopic(currentBlob)
-                        if (currentTopic != null) {
-                            val confirmation = extractProfileApprovalTopic(
-                                pullProfileFromRemote(profileId)
-                            )
-                            if (confirmation == currentTopic) {
-                                if (!attemptedInitialClaim || currentTopic == candidate) {
-                                    confirmedTopic = currentTopic
-                                }
-                                break
-                            }
-                        } else {
-                            // A second read avoids overwriting a pairing that
-                            // another TV published just before this claim.
-                            val claimCheckBlob = pullProfileFromRemote(profileId)
-                            val claimCheckTopic = extractProfileApprovalTopic(claimCheckBlob)
-                            if (claimCheckTopic != null) {
-                                val confirmation = extractProfileApprovalTopic(
-                                    pullProfileFromRemote(profileId)
-                                )
-                                if (confirmation == claimCheckTopic) {
-                                    confirmedTopic = claimCheckTopic
-                                    break
-                                }
-                                continue
-                            }
-                            attemptedInitialClaim = true
-                            val candidateBlob = updateProfileApprovalTopic(
-                                base = claimCheckBlob ?: currentBlob ?: exportSettingsBlob(profileId),
-                                topic = candidate
-                            )
-                            pushProfileToRemote(profileId, candidateBlob)
-                            val readBack = extractProfileApprovalTopic(
-                                pullProfileFromRemote(profileId)
-                            )
-                            if (readBack == candidate &&
-                                readBack == extractProfileApprovalTopic(
-                                    pullProfileFromRemote(profileId)
-                                )
-                            ) {
-                                confirmedTopic = readBack
-                                break
-                            }
-                        }
-                    }
-
-                    val topic = confirmedTopic
-                        ?: error("Phone approval pairing was not confirmed by the server")
-                    profileApprovalPairingDataStore.setTopic(profileId, topic)
-                    Result.success(topic)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Exception) {
-                    Log.e(TAG, "Failed to ensure phone approval pairing for profile $profileId")
-                    Result.failure(error)
-                }
-            }
-        }
-
-    suspend fun regeneratePhoneApprovalPairing(profileId: Int): Result<String> =
-        withContext(Dispatchers.IO) {
-            syncMutex.withLock {
-                if (!authManager.isAuthenticated) {
-                    return@withLock Result.failure(
-                        IllegalStateException("Authenticated account required for phone approval")
-                    )
-                }
-                try {
+                    check(authManager.isAuthenticated) { "Authenticated account required for phone approval" }
+                    val accountId = authManager.currentUserId
+                    // The second read narrows first-setup races; only a server-side CAS
+                    // could make simultaneous claims atomic.
                     val current = pullProfileFromRemote(profileId)
-                        ?: exportSettingsBlob(profileId)
-                    val topic = NtfyProfileApprovalPolicy.generateProfileTopic()
-                    pushProfileToRemote(
-                        profileId,
-                        updateProfileApprovalTopic(current, topic)
-                    )
-                    val confirmed = extractProfileApprovalTopic(
+                    val latest = if (action == PhoneApprovalPairingAction.Enable) {
                         pullProfileFromRemote(profileId)
-                    )
-                    check(confirmed == topic) {
-                        "Phone approval pairing rotation was not confirmed by the server"
+                    } else current
+                    val existing = extractProfileApprovalTopic(latest)
+                    val topic = when (action) {
+                        PhoneApprovalPairingAction.Enable ->
+                            existing ?: NtfyProfileApprovalPolicy.generateProfileTopic()
+                        PhoneApprovalPairingAction.Regenerate ->
+                            NtfyProfileApprovalPolicy.generateProfileTopic()
+                        PhoneApprovalPairingAction.Disable -> null
                     }
+                    check(authManager.currentUserId == accountId) { "Account changed during phone approval setup" }
+                    if (topic != existing) {
+                        pushProfileToRemote(
+                            profileId,
+                            updateProfileApprovalTopic(latest ?: exportSettingsBlob(profileId), topic),
+                            preserveApproval = false
+                        )
+                    }
+                    check(extractProfileApprovalTopic(pullProfileFromRemote(profileId)) == topic) {
+                        "Phone approval pairing was not confirmed by the server"
+                    }
+                    check(authManager.currentUserId == accountId) { "Account changed during phone approval setup" }
                     profileApprovalPairingDataStore.setTopic(profileId, topic)
                     Result.success(topic)
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Exception) {
-                    Log.e(TAG, "Failed to regenerate phone approval pairing for profile $profileId")
+                    Log.e(TAG, "Failed to update phone approval pairing for profile $profileId")
                     Result.failure(error)
                 }
             }
         }
 
-    suspend fun disablePhoneApprovalPairing(profileId: Int): Result<Unit> =
-        withContext(Dispatchers.IO) {
-            syncMutex.withLock {
-                if (!authManager.isAuthenticated) {
-                    return@withLock Result.failure(
-                        IllegalStateException("Authenticated account required for phone approval")
-                    )
-                }
-                try {
-                    val current = pullProfileFromRemote(profileId)
-                        ?: exportSettingsBlob(profileId)
-                    pushProfileToRemote(
-                        profileId,
-                        updateProfileApprovalTopic(current, topic = null)
-                    )
-                    check(extractProfileApprovalTopic(pullProfileFromRemote(profileId)) == null) {
-                        "Phone approval pairing disable was not confirmed by the server"
-                    }
-                    profileApprovalPairingDataStore.disable(profileId)
-                    Result.success(Unit)
-                } catch (error: CancellationException) {
-                    throw error
-                } catch (error: Exception) {
-                    Log.e(TAG, "Failed to disable phone approval pairing for profile $profileId")
-                    Result.failure(error)
-                }
-            }
-        }
-
-    /**
-     * Returns the authenticated remote pairing, never a stale local fallback.
-     * Unlock must fail closed when this read fails or the server has no pairing.
-     */
     suspend fun revalidatePhoneApprovalPairing(profileId: Int): Result<String?> =
         withContext(Dispatchers.IO) {
             syncMutex.withLock {
-                if (!authManager.isAuthenticated) {
-                    return@withLock Result.failure(
-                        IllegalStateException("Authenticated account required for phone approval")
-                    )
-                }
                 try {
+                    check(authManager.isAuthenticated) { "Authenticated account required for phone approval" }
+                    val accountId = authManager.currentUserId
                     val topic = extractProfileApprovalTopic(pullProfileFromRemote(profileId))
-                    if (topic == null) {
-                        profileApprovalPairingDataStore.disable(profileId)
-                    } else {
-                        profileApprovalPairingDataStore.setTopic(profileId, topic)
-                    }
-                    // Revalidation updates the local cache, but must not echo
-                    // the value back and undo a rotation made on another TV.
-                    skipNextPushSignature = buildSettingsSignature(profileId)
+                    check(authManager.currentUserId == accountId) { "Account changed during phone approval refresh" }
+                    profileApprovalPairingDataStore.setTopic(profileId, topic)
                     Result.success(topic)
                 } catch (error: CancellationException) {
                     throw error
@@ -595,9 +444,17 @@ class ProfileSettingsSyncService @Inject constructor(
 
     private suspend fun pushProfileToRemote(
         profileId: Int,
-        settingsJson: JsonObject? = null
-    ) {
-        val resolvedSettingsJson = settingsJson ?: exportSettingsBlob(profileId)
+        settingsJson: JsonObject? = null,
+        preserveApproval: Boolean = true
+    ): JsonObject {
+        val accountId = authManager.currentUserId
+        val localSettings = settingsJson ?: exportSettingsBlob(profileId)
+        // Pairing changes are explicit, never uploaded from a stale local cache
+        // or copied from another profile.
+        val resolvedSettingsJson = if (preserveApproval) {
+            updateProfileApprovalTopic(localSettings, extractProfileApprovalTopic(pullProfileFromRemote(profileId)))
+        } else localSettings
+        check(authManager.currentUserId == accountId) { "Account changed during settings upload" }
         val params = buildJsonObject {
             put("p_profile_id", profileId)
             put("p_settings_json", resolvedSettingsJson)
@@ -607,6 +464,11 @@ class ProfileSettingsSyncService @Inject constructor(
         withJwtRefreshRetry {
             postgrest.rpc("sync_push_profile_settings_blob", params)
         }
+        check(authManager.currentUserId == accountId) { "Account changed during settings upload" }
+        if (preserveApproval) {
+            profileApprovalPairingDataStore.setTopic(profileId, extractProfileApprovalTopic(resolvedSettingsJson))
+        }
+        return resolvedSettingsJson
     }
 
     private suspend fun pullProfileFromRemote(profileId: Int): JsonObject? {
@@ -639,39 +501,15 @@ class ProfileSettingsSyncService @Inject constructor(
         base: JsonObject,
         topic: String?
     ): JsonObject {
-        val currentFeatures = base["features"]?.jsonObject ?: JsonObject(emptyMap())
-        val updatedFeatures = buildJsonObject {
-            currentFeatures.forEach { (feature, value) ->
-                if (feature != PROFILE_APPROVAL_FEATURE) {
-                    put(feature, value)
-                }
-            }
-            if (topic != null) {
-                put(
-                    PROFILE_APPROVAL_FEATURE,
-                    buildJsonObject {
-                        put(
-                            PROFILE_APPROVAL_TOPIC_KEY,
-                            buildJsonObject {
-                                put("type", "string")
-                                put("value", topic)
-                            }
-                        )
-                    }
-                )
+        val features = (base["features"]?.jsonObject ?: JsonObject(emptyMap())).toMutableMap()
+        features.remove(PROFILE_APPROVAL_FEATURE)
+        if (topic != null) {
+            features[PROFILE_APPROVAL_FEATURE] = buildJsonObject {
+                put(PROFILE_APPROVAL_TOPIC_KEY, checkNotNull(encodePreferenceValue(topic)))
             }
         }
-        return buildJsonObject {
-            base.forEach { (key, value) ->
-                if (key != "features") put(key, value)
-            }
-            if ("version" !in base) put("version", 1)
-            put("features", updatedFeatures)
-        }
+        return JsonObject(base + ("features" to JsonObject(features)))
     }
-
-    private fun removeProfileApprovalFeature(base: JsonObject): JsonObject =
-        updateProfileApprovalTopic(base, topic = null)
 
     private suspend fun applySettingsBlob(
         profileId: Int,
@@ -682,22 +520,6 @@ class ProfileSettingsSyncService @Inject constructor(
         importSettingsBlob(profileId, featuresJson)
         if (isActiveProfile) {
             skipNextPushSignature = signature
-        }
-    }
-
-    private suspend fun applyProfileApprovalSettings(
-        profileId: Int,
-        featuresJson: JsonObject
-    ) {
-        val topic = extractProfileApprovalTopic(
-            buildJsonObject {
-                put("features", featuresJson)
-            }
-        )
-        if (topic == null) {
-            profileApprovalPairingDataStore.disable(profileId)
-        } else {
-            profileApprovalPairingDataStore.setTopic(profileId, topic)
         }
     }
 
@@ -764,10 +586,7 @@ class ProfileSettingsSyncService @Inject constructor(
     private suspend fun importSettingsBlob(profileId: Int, featuresJson: JsonObject) {
         applyingRemoteBlob = true
         try {
-            applyProfileApprovalSettings(profileId, featuresJson)
-            syncedFeatures
-                .filterNot { it == PROFILE_APPROVAL_FEATURE }
-                .forEach { feature ->
+            syncedFeatures.forEach { feature ->
                 val featureJson = featuresJson[feature]?.jsonObject ?: return@forEach
                 if (feature == PluginDataStore.FEATURE) {
                     importPluginSettings(profileId, featureJson)

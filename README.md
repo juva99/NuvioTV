@@ -49,11 +49,12 @@ regenerate it if it is exposed. Each TV request includes a bounded device name
 and uses a fresh response topic/token; only the first matching response is
 accepted. The TV revalidates the shared pairing before unlocking and fails
 closed on remote failure, cancellation, backgrounding, profile changes, or
-timeout. The existing settings RPCs provide no atomic compare-and-swap claim:
-initial pairing is read back and stabilized, and a detected competing claim
-fails rather than silently accepting a different candidate. This is not an
-atomic first-writer guarantee; a truly simultaneous first-time setup may need
-to be retried because the existing server API has no client-visible CAS.
+timeout. Pairings are refreshed for all profiles on the selection screen and
+kept out of automatic local-settings uploads and profile copies. Settings writes
+preserve the latest remote pairing rather than a cached topic. Initial setup and
+pairing changes are read back for confirmation, but the settings RPCs have no
+compare-and-swap: simultaneous setup or settings writes can still race and may
+require retrying. Atomic pairing updates require server support.
 The QR URL is intended for ntfy subscription in a phone app or web/PWA.
 HTTP actions are POST-only (no Safari GET approvals). An iOS proof of concept
 has been reported, but native iOS behavior has not been device-verified and is

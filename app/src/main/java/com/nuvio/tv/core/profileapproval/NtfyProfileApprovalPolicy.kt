@@ -11,12 +11,12 @@ enum class NtfyApprovalDecision {
     NO
 }
 
-/**
- * Wire-level rules for the direct ntfy profile-unlock transport.
- *
- * Topics and response tokens are bearer capabilities. They are deliberately
- * generated with no profile or device information in them.
- */
+enum class PhoneApprovalPairingAction {
+    Enable,
+    Regenerate,
+    Disable
+}
+
 object NtfyProfileApprovalPolicy {
     const val NTFY_BASE_URL = "https://ntfy.sh"
     const val REQUEST_TIMEOUT_MS = 2 * 60 * 1_000L
@@ -53,13 +53,6 @@ object NtfyProfileApprovalPolicy {
         return "$NTFY_BASE_URL/$topic"
     }
 
-    /**
-     * The QR uses the documented HTTPS topic URL. It works with a browser/PWA
-     * and can be handed to the native ntfy app when a phone scanner does not
-     * open the app directly.
-     */
-    fun subscriptionQrContent(topic: String): String = topicWebUrl(topic)
-
     fun responsePayload(token: String, decision: NtfyApprovalDecision): String =
         "$RESPONSE_PAYLOAD_PREFIX|$token|${decision.wireValue}"
 
@@ -78,10 +71,6 @@ object NtfyProfileApprovalPolicy {
         }
     }
 
-    /**
-     * Uses ntfy's JSON action format with HTTP POST actions. No Safari/browser
-     * GET approval is emitted; native iOS behavior remains unverified.
-     */
     fun buildNotificationJson(
         profileName: String,
         profileTopic: String,
@@ -103,22 +92,16 @@ object NtfyProfileApprovalPolicy {
             )
             put("priority", 5)
             put("actions", buildJsonArray {
-                add(buildJsonObject {
-                    put("action", "http")
-                    put("label", "Yes")
-                    put("url", responseUrl)
-                    put("method", "POST")
-                    put("body", responsePayload(responseToken, NtfyApprovalDecision.YES))
-                    put("clear", true)
-                })
-                add(buildJsonObject {
-                    put("action", "http")
-                    put("label", "No")
-                    put("url", responseUrl)
-                    put("method", "POST")
-                    put("body", responsePayload(responseToken, NtfyApprovalDecision.NO))
-                    put("clear", true)
-                })
+                NtfyApprovalDecision.entries.forEach { decision ->
+                    add(buildJsonObject {
+                        put("action", "http")
+                        put("label", if (decision == NtfyApprovalDecision.YES) "Yes" else "No")
+                        put("url", responseUrl)
+                        put("method", "POST")
+                        put("body", responsePayload(responseToken, decision))
+                        put("clear", true)
+                    })
+                }
             })
         }.toString()
     }
@@ -147,10 +130,6 @@ object NtfyProfileApprovalPolicy {
         get() = if (this == NtfyApprovalDecision.YES) "yes" else "no"
 }
 
-/**
- * Keeps repeated phone approval requests from becoming a notification spam
- * loop. The cooldown is intentionally applied even after cancellation.
- */
 internal class NtfyApprovalRetryGate(
     private val cooldownMs: Long = NtfyProfileApprovalPolicy.RETRY_COOLDOWN_MS
 ) {

@@ -111,6 +111,8 @@ import androidx.tv.material3.Text
 import androidx.compose.ui.res.stringResource
 import com.nuvio.tv.R
 import com.nuvio.tv.core.profileapproval.NtfyProfileApprovalPolicy
+import com.nuvio.tv.core.profileapproval.NtfyApprovalOutcome
+import com.nuvio.tv.core.profileapproval.PhoneApprovalPairingAction
 import com.nuvio.tv.core.sync.SetProfilePinResult
 import com.nuvio.tv.core.qr.QrCodeGenerator
 import com.nuvio.tv.data.remote.supabase.AvatarCatalogItem
@@ -192,14 +194,8 @@ private sealed interface ProfilePinOverlayState {
     data class VerifyCurrentForDelete(override val profile: UserProfile) : ProfilePinOverlayState
     data class VerifyCurrentForApproval(
         override val profile: UserProfile,
-        val action: ProfileApprovalAction
+        val onVerified: () -> Unit
     ) : ProfilePinOverlayState
-}
-
-private enum class ProfileApprovalAction {
-    Open,
-    Regenerate,
-    Disable
 }
 
 private enum class ProfilePinEntryStage {
@@ -277,55 +273,47 @@ fun ProfileSelectionScreen(
         }
     }
 
-    fun openProfileApproval(profile: UserProfile, action: ProfileApprovalAction = ProfileApprovalAction.Open) {
+    fun openProfileApproval(
+        profile: UserProfile,
+        onVerified: () -> Unit = { profileApprovalTarget = profile }
+    ) {
         profileApprovalError = null
         if (profilePinEnabled[profile.id] == true) {
             pinOverlayError = null
-            pinOverlayState = ProfilePinOverlayState.VerifyCurrentForApproval(profile, action)
+            pinOverlayState = ProfilePinOverlayState.VerifyCurrentForApproval(profile, onVerified)
         } else {
-            when (action) {
-                ProfileApprovalAction.Open -> profileApprovalTarget = profile
-                ProfileApprovalAction.Regenerate -> viewModel.regeneratePhoneApprovalPairing(profile.id) {
-                    if (it.isSuccess) {
-                        profileActionMessage = context.getString(R.string.profile_phone_pairing_regenerated)
-                    } else {
-                        profileApprovalError = context.getString(R.string.profile_phone_pairing_error)
-                    }
-                }
-                ProfileApprovalAction.Disable -> viewModel.disablePhoneApprovalPairing(profile.id) {
-                    if (it.isSuccess) {
-                        profileActionMessage = context.getString(R.string.profile_phone_pairing_disabled)
-                    } else {
-                        profileApprovalError = context.getString(R.string.profile_phone_pairing_error)
-                    }
-                }
-            }
+            onVerified()
+        }
+    }
+
+    fun updateProfileApproval(profile: UserProfile, action: PhoneApprovalPairingAction) {
+        viewModel.updatePhoneApprovalPairing(profile.id, action) { result ->
+            val message = when {
+                result.isFailure -> R.string.profile_phone_pairing_error
+                action == PhoneApprovalPairingAction.Regenerate -> R.string.profile_phone_pairing_regenerated
+                action == PhoneApprovalPairingAction.Disable -> R.string.profile_phone_pairing_disabled
+                else -> null
+            }?.let(context::getString)
+            if (action == PhoneApprovalPairingAction.Enable) profileApprovalError = message
+            else profileActionMessage = message
         }
     }
 
     LaunchedEffect(phoneApprovalState) {
-        when (val state = phoneApprovalState) {
-            is PhoneApprovalState.Denied -> {
-                profileActionMessage = context.getString(R.string.profile_phone_approval_denied)
-                viewModel.clearPhoneApprovalState()
-            }
-            is PhoneApprovalState.TimedOut -> {
-                profileActionMessage = context.getString(R.string.profile_phone_approval_timeout)
-                viewModel.clearPhoneApprovalState()
-            }
-            is PhoneApprovalState.Failed -> {
-                profileActionMessage = context.getString(R.string.profile_phone_approval_error)
-                viewModel.clearPhoneApprovalState()
-            }
-            is PhoneApprovalState.RateLimited -> {
-                profileActionMessage = context.getString(
-                    R.string.profile_phone_approval_rate_limited,
-                    state.retryAfterSeconds
-                )
-                viewModel.clearPhoneApprovalState()
-            }
-            PhoneApprovalState.Idle,
-            is PhoneApprovalState.Waiting -> Unit
+        val message = when (val outcome = phoneApprovalState?.outcome) {
+            NtfyApprovalOutcome.Denied -> context.getString(R.string.profile_phone_approval_denied)
+            NtfyApprovalOutcome.TimedOut -> context.getString(R.string.profile_phone_approval_timeout)
+            is NtfyApprovalOutcome.RateLimited -> context.getString(
+                R.string.profile_phone_approval_rate_limited, outcome.retryAfterSeconds
+            )
+            NtfyApprovalOutcome.NotConfigured,
+            NtfyApprovalOutcome.Busy,
+            NtfyApprovalOutcome.Failed -> context.getString(R.string.profile_phone_approval_error)
+            NtfyApprovalOutcome.Approved, null -> null
+        }
+        if (message != null) {
+            profileActionMessage = message
+            viewModel.clearPhoneApprovalState()
         }
     }
 
@@ -516,7 +504,9 @@ fun ProfileSelectionScreen(
                     isWorking = isPinOperationInProgress,
                     phoneApprovalAvailable = activePinOverlay is ProfilePinOverlayState.Unlock &&
                         profileApprovalPairings.containsKey(activePinOverlay.profile.id),
-                    phoneApprovalWaiting = phoneApprovalState is PhoneApprovalState.Waiting,
+                    phoneApprovalWaiting = phoneApprovalState?.let {
+                        it.profileId == activePinOverlay.profile.id && it.outcome == null
+                    } == true,
                     errorMessage = pinOverlayError,
                     onClearError = { pinOverlayError = null },
                     onPhoneApproval = {
@@ -642,41 +632,7 @@ fun ProfileSelectionScreen(
                                         if (verify.unlocked) {
                                             pinOverlayError = null
                                             pinOverlayState = null
-                                            when (activePinOverlay.action) {
-                                                ProfileApprovalAction.Open -> {
-                                                    profileApprovalTarget = activePinOverlay.profile
-                                                }
-                                                ProfileApprovalAction.Regenerate -> {
-                                                    viewModel.regeneratePhoneApprovalPairing(
-                                                        activePinOverlay.profile.id
-                                                    ) { pairingResult ->
-                                                        if (pairingResult.isSuccess) {
-                                                            profileActionMessage = context.getString(
-                                                                R.string.profile_phone_pairing_regenerated
-                                                            )
-                                                        } else {
-                                                            profileActionMessage = context.getString(
-                                                                R.string.profile_phone_pairing_error
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                                ProfileApprovalAction.Disable -> {
-                                                    viewModel.disablePhoneApprovalPairing(
-                                                        activePinOverlay.profile.id
-                                                    ) { pairingResult ->
-                                                        if (pairingResult.isSuccess) {
-                                                            profileActionMessage = context.getString(
-                                                                R.string.profile_phone_pairing_disabled
-                                                            )
-                                                        } else {
-                                                            profileActionMessage = context.getString(
-                                                                R.string.profile_phone_pairing_error
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                            activePinOverlay.onVerified()
                                         } else {
                                             pinOverlayError = if (verify.retryAfterSeconds > 0) {
                                                 context.getString(
@@ -963,21 +919,19 @@ fun ProfileSelectionScreen(
                 },
                 onEnable = {
                     profileApprovalError = null
-                    viewModel.ensurePhoneApprovalPairing(profile.id) { result ->
-                        if (result.isFailure) {
-                            profileApprovalError = context.getString(
-                                R.string.profile_phone_pairing_error
-                            )
-                        }
-                    }
+                    updateProfileApproval(profile, PhoneApprovalPairingAction.Enable)
                 },
                 onRegenerate = {
                     profileApprovalTarget = null
-                    openProfileApproval(profile, ProfileApprovalAction.Regenerate)
+                    openProfileApproval(profile) {
+                        updateProfileApproval(profile, PhoneApprovalPairingAction.Regenerate)
+                    }
                 },
                 onDisable = {
                     profileApprovalTarget = null
-                    openProfileApproval(profile, ProfileApprovalAction.Disable)
+                    openProfileApproval(profile) {
+                        updateProfileApproval(profile, PhoneApprovalPairingAction.Disable)
+                    }
                 }
             )
         }
@@ -2617,9 +2571,7 @@ private fun ProfileApprovalPairingDialog(
     onRegenerate: () -> Unit,
     onDisable: () -> Unit
 ) {
-    val topicUrl = topic?.let {
-        runCatching { NtfyProfileApprovalPolicy.subscriptionQrContent(it) }.getOrNull()
-    }
+    val topicUrl = topic?.let(NtfyProfileApprovalPolicy::topicWebUrl)
     val qrBitmap = remember(topicUrl) {
         topicUrl?.let { url ->
             runCatching { QrCodeGenerator.generate(url, 420, margin = 1) }.getOrNull()

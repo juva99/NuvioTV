@@ -1,6 +1,7 @@
 package com.nuvio.tv.core.profileapproval
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -11,8 +12,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NtfyProfileApprovalPolicyTest {
-    private val json = Json
-
     @Test
     fun `profile and response capabilities are random and structurally isolated`() {
         val profileTopic = NtfyProfileApprovalPolicy.generateProfileTopic()
@@ -60,14 +59,7 @@ class NtfyProfileApprovalPolicyTest {
         val profileTopic = NtfyProfileApprovalPolicy.generateProfileTopic()
         val responseTopic = NtfyProfileApprovalPolicy.generateResponseTopic()
         val token = NtfyProfileApprovalPolicy.generateResponseToken()
-        val notification = json.parseToJsonElement(
-            NtfyProfileApprovalPolicy.buildNotificationJson(
-                profileName = "Living room",
-                profileTopic = profileTopic,
-                responseTopic = responseTopic,
-                responseToken = token
-            )
-        ).jsonObject
+        val notification = notification(profileTopic, responseTopic, token)
         val actions = notification.getValue("actions").jsonArray
 
         assertEquals(profileTopic, notification.getValue("topic").jsonPrimitive.content)
@@ -96,24 +88,8 @@ class NtfyProfileApprovalPolicyTest {
         val firstToken = NtfyProfileApprovalPolicy.generateResponseToken()
         val secondToken = NtfyProfileApprovalPolicy.generateResponseToken()
 
-        val first = json.parseToJsonElement(
-            NtfyProfileApprovalPolicy.buildNotificationJson(
-                profileName = "Living room",
-                profileTopic = profileTopic,
-                responseTopic = firstResponseTopic,
-                responseToken = firstToken,
-                deviceName = "TV downstairs"
-            )
-        ).jsonObject
-        val second = json.parseToJsonElement(
-            NtfyProfileApprovalPolicy.buildNotificationJson(
-                profileName = "Living room",
-                profileTopic = profileTopic,
-                responseTopic = secondResponseTopic,
-                responseToken = secondToken,
-                deviceName = "TV upstairs"
-            )
-        ).jsonObject
+        val first = notification(profileTopic, firstResponseTopic, firstToken, deviceName = "TV downstairs")
+        val second = notification(profileTopic, secondResponseTopic, secondToken, deviceName = "TV upstairs")
 
         assertNotEquals(
             first.getValue("actions").jsonArray[0].jsonObject.getValue("url"),
@@ -138,15 +114,10 @@ class NtfyProfileApprovalPolicyTest {
 
     @Test
     fun `notification labels are bounded and control characters are sanitized`() {
-        val notification = json.parseToJsonElement(
-            NtfyProfileApprovalPolicy.buildNotificationJson(
-                profileName = "profile\n".repeat(100),
-                profileTopic = NtfyProfileApprovalPolicy.generateProfileTopic(),
-                responseTopic = NtfyProfileApprovalPolicy.generateResponseTopic(),
-                responseToken = NtfyProfileApprovalPolicy.generateResponseToken(),
-                deviceName = "device\r\n\t".repeat(100)
-            )
-        ).jsonObject
+        val notification = notification(
+            profileName = "profile\n".repeat(100),
+            deviceName = "device\r\n\t".repeat(100)
+        )
 
         val message = notification.getValue("message").jsonPrimitive.content
         assertTrue(message.length <= 200)
@@ -158,7 +129,17 @@ class NtfyProfileApprovalPolicyTest {
         val gate = NtfyApprovalRetryGate(cooldownMs = 5_000L)
 
         assertEquals(0L, gate.checkAndRecord(profileId = 2, nowMs = 100L))
-        assertEquals(4_000L, gate.checkAndRecord(profileId = 2, nowMs = 1_000L))
+        assertEquals(4_100L, gate.checkAndRecord(profileId = 2, nowMs = 1_000L))
         assertEquals(0L, gate.checkAndRecord(profileId = 2, nowMs = 5_100L))
     }
+
+    private fun notification(
+        profileTopic: String = NtfyProfileApprovalPolicy.generateProfileTopic(),
+        responseTopic: String = NtfyProfileApprovalPolicy.generateResponseTopic(),
+        token: String = NtfyProfileApprovalPolicy.generateResponseToken(),
+        profileName: String = "Living room",
+        deviceName: String = "Android TV"
+    ): JsonObject = Json.parseToJsonElement(
+        NtfyProfileApprovalPolicy.buildNotificationJson(profileName, profileTopic, responseTopic, token, deviceName)
+    ).jsonObject
 }

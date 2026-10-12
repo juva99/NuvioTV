@@ -3,14 +3,23 @@ package com.nuvio.tv.core.sync
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.lifecycle.viewModelScope
+import com.nuvio.tv.MainDispatcherRule
 import com.nuvio.tv.TestPreferencesStore
 import com.nuvio.tv.core.auth.AuthManager
 import com.nuvio.tv.core.profile.ProfileManager
+import com.nuvio.tv.core.profileapproval.PhoneApprovalPairingAction
 import com.nuvio.tv.data.local.PROFILE_APPROVAL_FEATURE
 import com.nuvio.tv.data.local.ProfileApprovalPairingDataStore
 import com.nuvio.tv.data.local.PluginDataStore
 import com.nuvio.tv.data.local.ProfileDataStoreFactory
 import com.nuvio.tv.domain.model.UserProfile
+import com.nuvio.tv.domain.model.MemberAccess
+import com.nuvio.tv.data.local.ProfileLockStateDataStore
+import com.nuvio.tv.data.local.ThemeDataStore
+import com.nuvio.tv.data.remote.supabase.ProfileBackgroundRepository
+import com.nuvio.tv.data.repository.MemberAccessRepository
+import com.nuvio.tv.ui.screens.profile.ProfileSelectionViewModel
 import com.squareup.moshi.Moshi
 import io.github.jan.supabase.postgrest.Postgrest
 import io.github.jan.supabase.postgrest.result.PostgrestResult
@@ -21,13 +30,13 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
-import io.mockk.coVerify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -45,10 +54,13 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.Rule
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ProfileSettingsPluginSyncTest {
     private val dispatcher = StandardTestDispatcher()
+    @get:Rule
+    val mainDispatcher = MainDispatcherRule(dispatcher)
     private val services = mutableListOf<ProfileSettingsSyncService>()
 
     @Before
@@ -261,8 +273,8 @@ class ProfileSettingsPluginSyncTest {
         val firstTv = harness(profileId = 1, authenticated = true, remote = remote)
         val secondTv = harness(profileId = 1, authenticated = true, remote = remote)
 
-        val firstTopic = firstTv.service.ensurePhoneApprovalPairing(1).getOrThrow()
-        val secondTopic = secondTv.service.ensurePhoneApprovalPairing(1).getOrThrow()
+        val firstTopic = firstTv.service.updatePhoneApprovalPairing(1, PhoneApprovalPairingAction.Enable).getOrThrow()
+        val secondTopic = secondTv.service.updatePhoneApprovalPairing(1, PhoneApprovalPairingAction.Enable).getOrThrow()
 
         assertEquals(firstTopic, secondTopic)
         assertEquals(
@@ -275,20 +287,6 @@ class ProfileSettingsPluginSyncTest {
     }
 
     @Test
-    fun `equal numeric profile IDs in separate authenticated accounts stay isolated`() = runTest(dispatcher) {
-        val firstAccount = harness(profileId = 2, authenticated = true)
-        val secondAccount = harness(profileId = 2, authenticated = true)
-
-        val firstTopic = firstAccount.service.ensurePhoneApprovalPairing(2).getOrThrow()
-        val secondTopic = secondAccount.service.ensurePhoneApprovalPairing(2).getOrThrow()
-
-        assertFalse(firstTopic == secondTopic)
-        assertFalse(firstAccount.remote === secondAccount.remote)
-        assertEquals(firstTopic, accountTopic(firstAccount.remote, 2))
-        assertEquals(secondTopic, accountTopic(secondAccount.remote, 2))
-    }
-
-    @Test
     fun `missing remote pairing does not reuse a stale local account pairing`() = runTest(dispatcher) {
         val oldAccountTopic = "nuvio-" + "a".repeat(48)
         val harness = harness(profileId = 2, authenticated = true)
@@ -296,10 +294,20 @@ class ProfileSettingsPluginSyncTest {
             preferences[stringPreferencesKey("topic")] = oldAccountTopic
         }
 
-        val newTopic = harness.service.ensurePhoneApprovalPairing(2).getOrThrow()
+        val newTopic = harness.service.updatePhoneApprovalPairing(2, PhoneApprovalPairingAction.Enable).getOrThrow()
 
         assertFalse(newTopic == oldAccountTopic)
         assertEquals(newTopic, accountTopic(harness.remote, 2))
+    }
+
+    @Test
+    fun `account changes abort pairing setup before publishing or caching`() = runTest(dispatcher) {
+        val harness = harness(authenticated = true)
+        every { harness.authManager.currentUserId } returnsMany listOf("first-account", "second-account")
+
+        assertTrue(harness.service.updatePhoneApprovalPairing(1, PhoneApprovalPairingAction.Enable).isFailure)
+        assertTrue(harness.pushes.isEmpty())
+        assertEquals(null, harness.pairingStore.observeTopic(1).first())
     }
 
     @Test
@@ -311,7 +319,7 @@ class ProfileSettingsPluginSyncTest {
             3 to settingsWithApprovalTopic(targetTopic, theme = "target")
         )
         val harness = harness(profileId = 1, authenticated = true, remote = remote)
-        coEvery { harness.pairingStore.topicFor(3) } returns targetTopic
+        harness.pairingStore.setTopic(3, targetTopic)
 
         harness.service.copyProfileSetup(
             sourceProfileId = 2,
@@ -328,7 +336,7 @@ class ProfileSettingsPluginSyncTest {
                 .getValue("value").jsonPrimitive.content
         )
         assertTrue(harness.copyRequests.isEmpty())
-        coVerify { harness.pairingStore.setTopic(3, targetTopic) }
+        assertEquals(targetTopic, harness.pairingStore.observeTopic(3).first())
     }
 
     @Test
@@ -351,6 +359,82 @@ class ProfileSettingsPluginSyncTest {
         assertEquals("false", params.getValue("p_copy_tv").jsonPrimitive.content)
         assertEquals("true", params.getValue("p_copy_provider_credentials").jsonPrimitive.content)
         assertEquals(targetTopic, accountTopic(remote, 3))
+    }
+
+    @Test
+    fun `regular settings uploads preserve remote rotation or revocation instead of cached pairing`() = runTest(dispatcher) {
+        val harness = harness(authenticated = true)
+        val staleTopic = "nuvio-" + "a".repeat(48)
+        val rotatedTopic = "nuvio-" + "b".repeat(48)
+        harness.store(1, PROFILE_APPROVAL_FEATURE).edit { it[stringPreferencesKey("topic")] = staleTopic }
+        runCurrent()
+        harness.remote[1] = settingsWithApprovalTopic(rotatedTopic)
+
+        harness.service.pushCurrentProfileToRemote().getOrThrow()
+        assertEquals(rotatedTopic, accountTopic(harness.remote, 1))
+        harness.remote[1] = settings(null)
+        harness.service.pushCurrentProfileToRemote().getOrThrow()
+        assertFalse(PROFILE_APPROVAL_FEATURE in harness.remote.getValue(1).getValue("features").jsonObject)
+    }
+
+    @Test
+    fun `pairing cache refresh does not trigger a settings upload`() = runTest(dispatcher) {
+        val harness = harness(authenticated = true)
+        runCurrent()
+        harness.store(1, PROFILE_APPROVAL_FEATURE).edit {
+            it[stringPreferencesKey("topic")] = "nuvio-" + "a".repeat(48)
+        }
+        runCurrent()
+        advanceTimeBy(2_000)
+        runCurrent()
+
+        assertTrue(harness.pushes.isEmpty())
+    }
+
+    @Test
+    fun `pairing rotation and disable are confirmed and update the cache`() = runTest(dispatcher) {
+        val harness = harness(authenticated = true)
+        val original = harness.service.updatePhoneApprovalPairing(1, PhoneApprovalPairingAction.Enable).getOrThrow()
+        val rotated = harness.service.updatePhoneApprovalPairing(1, PhoneApprovalPairingAction.Regenerate).getOrThrow()
+        assertFalse(original == rotated)
+        assertEquals(rotated, accountTopic(harness.remote, 1))
+
+        assertEquals(null, harness.service.updatePhoneApprovalPairing(1, PhoneApprovalPairingAction.Disable).getOrThrow())
+        assertFalse(PROFILE_APPROVAL_FEATURE in harness.remote.getValue(1).getValue("features").jsonObject)
+        assertEquals(null, harness.pairingStore.observeTopic(1).first())
+    }
+
+    @Test
+    fun `profile selection loads inactive profile pairing without switching profiles`() = runTest(dispatcher) {
+        val topic = "nuvio-" + "a".repeat(48)
+        val harness = harness(authenticated = true, remote = mutableMapOf(2 to settingsWithApprovalTopic(topic)))
+        val profileSync = mockk<ProfileSyncService> {
+            coEvery { pullProfileLockStates() } returns Result.success(emptyMap())
+        }
+        val backgrounds = mockk<ProfileBackgroundRepository>(relaxed = true) {
+            every { catalog } returns MutableStateFlow(emptyList())
+        }
+        val members = mockk<MemberAccessRepository> {
+            every { access } returns MutableStateFlow(MemberAccess.None)
+        }
+        val locks = mockk<ProfileLockStateDataStore>(relaxed = true) {
+            every { pinEnabled } returns flowOf(emptyMap())
+        }
+        val themes = mockk<ThemeDataStore> {
+            every { observeThemeForProfile(any()) } returns flowOf(null)
+        }
+        val viewModel = ProfileSelectionViewModel(
+            harness.profileManager, profileSync, harness.service, mockk(relaxed = true),
+            backgrounds, members, locks, harness.pairingStore, mockk(relaxed = true), themes
+        )
+        try {
+            runCurrent()
+            assertEquals(topic, viewModel.profileApprovalPairings.value[2])
+            assertEquals(1, viewModel.activeProfileId.value)
+            assertTrue(harness.pushes.isEmpty())
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
     }
 
     private fun harness(
@@ -376,12 +460,12 @@ class ProfileSettingsPluginSyncTest {
         every { profileManager.activeProfile } answers { profiles.value.first { it.id == activeProfileId.value } }
         val authManager = mockk<AuthManager>(relaxed = true)
         every { authManager.isAuthenticated } returns authenticated
+        every { authManager.currentUserId } returns if (authenticated) "test-account" else null
         val identity = mockk<SyncClientIdentity>()
         every { identity.currentClientId() } returns "nuvio-tv-plugin-sync-test"
         val pulls = mutableListOf<Int>()
         val pushes = mutableListOf<Int>()
-        val pairingStore = mockk<ProfileApprovalPairingDataStore>(relaxed = true)
-        coEvery { pairingStore.topicFor(any()) } returns null
+        val pairingStore = ProfileApprovalPairingDataStore(factory)
         val postgrest = mockk<Postgrest>()
         every { postgrest.serializer } returns KotlinXSerializer()
         val copyRequests = mutableListOf<JsonObject>()
@@ -432,7 +516,7 @@ class ProfileSettingsPluginSyncTest {
         )
         services += service
         val plugins = PluginDataStore(mockk(relaxed = true), Moshi.Builder().build(), factory, profileManager)
-        return Harness(service, plugins, factory, remote, pulls, pushes, pairingStore, copyRequests)
+        return Harness(service, plugins, factory, remote, pulls, pushes, pairingStore, copyRequests, profileManager, authManager)
     }
 
     private fun accountTopic(remote: Map<Int, JsonObject>, profileId: Int): String =
@@ -490,7 +574,9 @@ class ProfileSettingsPluginSyncTest {
         val pulls: MutableList<Int>,
         val pushes: MutableList<Int>,
         val pairingStore: ProfileApprovalPairingDataStore,
-        val copyRequests: MutableList<JsonObject>
+        val copyRequests: MutableList<JsonObject>,
+        val profileManager: ProfileManager,
+        val authManager: AuthManager
     ) {
         fun store(profileId: Int, feature: String) = factory.get(profileId, feature) as TestPreferencesStore
         fun pluginStore(profileId: Int) = store(profileId, PluginDataStore.FEATURE)
