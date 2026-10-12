@@ -17,11 +17,16 @@ import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.data.local.ContinueWatchingEnrichmentCache
 import com.nuvio.tv.data.local.ExperienceModeDataStore
 import com.nuvio.tv.data.local.PluginDataStore
+import com.nuvio.tv.data.local.PROFILE_APPROVAL_FEATURE
+import com.nuvio.tv.data.local.PROFILE_APPROVAL_TOPIC_KEY
+import com.nuvio.tv.data.local.ProfileApprovalPairingDataStore
 import com.nuvio.tv.data.local.ProfileDataStoreFactory
 import com.nuvio.tv.data.local.StreamBadgeSettingsDataStore
 import com.nuvio.tv.data.local.TmdbSettingsDataStore
 import com.nuvio.tv.data.remote.supabase.SupabaseProfileSetupCopyResult
 import com.nuvio.tv.data.remote.supabase.SupabaseProfileSettingsBlob
+import com.nuvio.tv.core.profileapproval.NtfyProfileApprovalPolicy
+import com.nuvio.tv.core.profileapproval.PhoneApprovalPairingAction
 import com.nuvio.tv.domain.model.DiscoverLocation
 import com.nuvio.tv.domain.repository.MetaRepository
 import io.github.jan.supabase.postgrest.Postgrest
@@ -173,6 +178,7 @@ class ProfileSettingsSyncService @Inject constructor(
     private val profileManager: ProfileManager,
     private val profileDataStoreFactory: ProfileDataStoreFactory,
     private val syncClientIdentity: SyncClientIdentity,
+    private val profileApprovalPairingDataStore: ProfileApprovalPairingDataStore,
     private val providerCredentialSyncService: ProviderCredentialSyncService,
     private val tmdbSettingsDataStore: TmdbSettingsDataStore,
     private val metaRepository: MetaRepository,
@@ -238,6 +244,7 @@ class ProfileSettingsSyncService @Inject constructor(
                 val profileId = profileManager.activeProfileId.value
                 val inheritedPluginSettingsApplied = pullInheritedPluginSettings(profileId)
                 val blob = pullProfileFromRemote(profileId)
+                profileApprovalPairingDataStore.setTopic(profileId, extractProfileApprovalTopic(blob))
                 lastForegroundPullAtMs = SystemClock.elapsedRealtime()
                 if (blob == null) {
                     Log.d(TAG, "No remote profile settings blob for profile $profileId; keeping local settings")
@@ -283,36 +290,32 @@ class ProfileSettingsSyncService @Inject constructor(
                             providerCredentialSyncService.syncFromRemote().getOrThrow()
                         }
                         val sourceBlob = if (sourceProfileId == profileManager.activeProfileId.value) {
-                            exportSettingsBlob(sourceProfileId).also { blob ->
-                                pushProfileToRemote(sourceProfileId, blob)
-                            }
+                            pushProfileToRemote(sourceProfileId)
                         } else {
                             pullProfileFromRemote(sourceProfileId)
-                                ?: exportSettingsBlob(sourceProfileId).also { blob ->
-                                    pushProfileToRemote(sourceProfileId, blob)
-                                }
+                                ?: pushProfileToRemote(sourceProfileId)
                         }
                         require(sourceBlob["features"] is JsonObject)
 
-                        val params = buildJsonObject {
-                            put("p_source_profile_id", sourceProfileId)
-                            put("p_target_profile_id", targetProfileId)
-                            put("p_copy_tv", true)
-                            put("p_copy_mobile", false)
-                            put("p_copy_desktop", false)
-                            put("p_copy_provider_credentials", copyProviderCredentials)
-                            put("p_replace_provider_credentials", false)
-                            putSyncOriginClientId(syncClientIdentity)
-                        }
-                        val response = withJwtRefreshRetry {
-                            postgrest.rpc("sync_copy_profile_setup", params)
-                        }
-                        val copyResult = response.decodeList<SupabaseProfileSetupCopyResult>().firstOrNull()
-                            ?: error("Profile settings copy returned no result")
-                        check(copyResult.sourceProfileId == sourceProfileId)
-                        check(copyResult.targetProfileId == targetProfileId)
-                        check(copyResult.tvStatus == "copied" || copyResult.tvStatus == "unchanged")
                         if (copyProviderCredentials) {
+                            val params = buildJsonObject {
+                                put("p_source_profile_id", sourceProfileId)
+                                put("p_target_profile_id", targetProfileId)
+                                put("p_copy_tv", false)
+                                put("p_copy_mobile", false)
+                                put("p_copy_desktop", false)
+                                put("p_copy_provider_credentials", true)
+                                put("p_replace_provider_credentials", false)
+                                putSyncOriginClientId(syncClientIdentity)
+                            }
+                            val response = withJwtRefreshRetry {
+                                postgrest.rpc("sync_copy_profile_setup", params)
+                            }
+                            val copyResult = response.decodeList<SupabaseProfileSetupCopyResult>().firstOrNull()
+                                ?: error("Profile settings provider credential copy returned no result")
+                            check(copyResult.sourceProfileId == sourceProfileId)
+                            check(copyResult.targetProfileId == targetProfileId)
+                            check(copyResult.tvStatus == "not_selected")
                             check(
                                 copyResult.providerCredentialsStatus in setOf(
                                     "copied",
@@ -323,9 +326,7 @@ class ProfileSettingsSyncService @Inject constructor(
                                 )
                             )
                         }
-                        pullProfileFromRemote(targetProfileId)
-                            ?.get("features")
-                            ?.jsonObject
+                        pushProfileToRemote(targetProfileId, sourceBlob)["features"]?.jsonObject
                             ?: error("Copied TV settings are unavailable")
                     } else {
                         exportSettingsBlob(sourceProfileId)["features"]?.jsonObject
@@ -357,6 +358,71 @@ class ProfileSettingsSyncService @Inject constructor(
             }
         }
 
+    suspend fun updatePhoneApprovalPairing(
+        profileId: Int,
+        action: PhoneApprovalPairingAction
+    ): Result<String?> =
+        withContext(Dispatchers.IO) {
+            syncMutex.withLock {
+                try {
+                    check(authManager.isAuthenticated) { "Authenticated account required for phone approval" }
+                    val accountId = authManager.currentUserId
+                    // The second read narrows first-setup races; only a server-side CAS
+                    // could make simultaneous claims atomic.
+                    val current = pullProfileFromRemote(profileId)
+                    val latest = if (action == PhoneApprovalPairingAction.Enable) {
+                        pullProfileFromRemote(profileId)
+                    } else current
+                    val existing = extractProfileApprovalTopic(latest)
+                    val topic = when (action) {
+                        PhoneApprovalPairingAction.Enable ->
+                            existing ?: NtfyProfileApprovalPolicy.generateProfileTopic()
+                        PhoneApprovalPairingAction.Regenerate ->
+                            NtfyProfileApprovalPolicy.generateProfileTopic()
+                        PhoneApprovalPairingAction.Disable -> null
+                    }
+                    check(authManager.currentUserId == accountId) { "Account changed during phone approval setup" }
+                    if (topic != existing) {
+                        pushProfileToRemote(
+                            profileId,
+                            updateProfileApprovalTopic(latest ?: exportSettingsBlob(profileId), topic),
+                            preserveApproval = false
+                        )
+                    }
+                    check(extractProfileApprovalTopic(pullProfileFromRemote(profileId)) == topic) {
+                        "Phone approval pairing was not confirmed by the server"
+                    }
+                    check(authManager.currentUserId == accountId) { "Account changed during phone approval setup" }
+                    profileApprovalPairingDataStore.setTopic(profileId, topic)
+                    Result.success(topic)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    Log.e(TAG, "Failed to update phone approval pairing for profile $profileId")
+                    Result.failure(error)
+                }
+            }
+        }
+
+    suspend fun revalidatePhoneApprovalPairing(profileId: Int): Result<String?> =
+        withContext(Dispatchers.IO) {
+            syncMutex.withLock {
+                try {
+                    check(authManager.isAuthenticated) { "Authenticated account required for phone approval" }
+                    val accountId = authManager.currentUserId
+                    val topic = extractProfileApprovalTopic(pullProfileFromRemote(profileId))
+                    check(authManager.currentUserId == accountId) { "Account changed during phone approval refresh" }
+                    profileApprovalPairingDataStore.setTopic(profileId, topic)
+                    Result.success(topic)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    Log.w(TAG, "Failed to revalidate phone approval pairing for profile $profileId")
+                    Result.failure(error)
+                }
+            }
+        }
+
     fun requestForegroundPull(force: Boolean = false) {
         providerCredentialSyncService.requestForegroundPull(force)
         if (!authManager.isAuthenticated) return
@@ -378,9 +444,17 @@ class ProfileSettingsSyncService @Inject constructor(
 
     private suspend fun pushProfileToRemote(
         profileId: Int,
-        settingsJson: JsonObject? = null
-    ) {
-        val resolvedSettingsJson = settingsJson ?: exportSettingsBlob(profileId)
+        settingsJson: JsonObject? = null,
+        preserveApproval: Boolean = true
+    ): JsonObject {
+        val accountId = authManager.currentUserId
+        val localSettings = settingsJson ?: exportSettingsBlob(profileId)
+        // Pairing changes are explicit, never uploaded from a stale local cache
+        // or copied from another profile.
+        val resolvedSettingsJson = if (preserveApproval) {
+            updateProfileApprovalTopic(localSettings, extractProfileApprovalTopic(pullProfileFromRemote(profileId)))
+        } else localSettings
+        check(authManager.currentUserId == accountId) { "Account changed during settings upload" }
         val params = buildJsonObject {
             put("p_profile_id", profileId)
             put("p_settings_json", resolvedSettingsJson)
@@ -390,6 +464,11 @@ class ProfileSettingsSyncService @Inject constructor(
         withJwtRefreshRetry {
             postgrest.rpc("sync_push_profile_settings_blob", params)
         }
+        check(authManager.currentUserId == accountId) { "Account changed during settings upload" }
+        if (preserveApproval) {
+            profileApprovalPairingDataStore.setTopic(profileId, extractProfileApprovalTopic(resolvedSettingsJson))
+        }
+        return resolvedSettingsJson
     }
 
     private suspend fun pullProfileFromRemote(profileId: Int): JsonObject? {
@@ -401,6 +480,35 @@ class ProfileSettingsSyncService @Inject constructor(
             postgrest.rpc("sync_pull_profile_settings_blob", params)
         }
         return response.decodeList<SupabaseProfileSettingsBlob>().firstOrNull()?.settingsJson
+    }
+
+    private fun extractProfileApprovalTopic(blob: JsonObject?): String? {
+        val encodedTopic = blob
+            ?.get("features")
+            ?.let { it as? JsonObject }
+            ?.get(PROFILE_APPROVAL_FEATURE)
+            ?.let { it as? JsonObject }
+            ?.get(PROFILE_APPROVAL_TOPIC_KEY)
+            ?.let { it as? JsonObject }
+            ?: return null
+        if ((encodedTopic["type"] as? JsonPrimitive)?.contentOrNull != "string") return null
+        return (encodedTopic["value"] as? JsonPrimitive)
+            ?.contentOrNull
+            ?.takeIf(NtfyProfileApprovalPolicy::isProfileTopic)
+    }
+
+    private fun updateProfileApprovalTopic(
+        base: JsonObject,
+        topic: String?
+    ): JsonObject {
+        val features = (base["features"]?.jsonObject ?: JsonObject(emptyMap())).toMutableMap()
+        features.remove(PROFILE_APPROVAL_FEATURE)
+        if (topic != null) {
+            features[PROFILE_APPROVAL_FEATURE] = buildJsonObject {
+                put(PROFILE_APPROVAL_TOPIC_KEY, checkNotNull(encodePreferenceValue(topic)))
+            }
+        }
+        return JsonObject(base + ("features" to JsonObject(features)))
     }
 
     private suspend fun applySettingsBlob(

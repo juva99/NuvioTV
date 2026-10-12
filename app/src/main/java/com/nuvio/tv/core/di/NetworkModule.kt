@@ -135,6 +135,35 @@ object NetworkModule {
     }
 
     /**
+     * Dedicated ntfy transport. It intentionally has no logging, cookies,
+     * Sentry breadcrumbs, redirects, or cache: topic URLs and response topics
+     * are bearer capabilities, not diagnostic data.
+     */
+    @Provides
+    @Singleton
+    @Named("ntfy")
+    fun provideNtfyOkHttpClient(): OkHttpClient {
+        return OkHttpClient.Builder()
+            .dns(IPv4FirstDns())
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(0, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
+            .callTimeout(0, TimeUnit.SECONDS)
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .retryOnConnectionFailure(false)
+            .addInterceptor { chain ->
+                val version = BuildConfig.VERSION_NAME.ifBlank { "dev" }
+                chain.proceed(
+                    chain.request().newBuilder()
+                        .header("User-Agent", "Nuvio/$version")
+                        .build()
+                )
+            }
+            .build()
+    }
+
+    /**
      * Permissive client for addon-provided URLs, including self-hosted servers with self-signed
      * certificates. Uses a separate cache from first-party traffic.
      *

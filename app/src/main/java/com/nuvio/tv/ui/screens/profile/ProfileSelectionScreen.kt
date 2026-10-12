@@ -67,6 +67,7 @@ import androidx.compose.foundation.focusable
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.Image
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -80,12 +81,14 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -100,12 +103,18 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.Text
 import androidx.compose.ui.res.stringResource
 import com.nuvio.tv.R
+import com.nuvio.tv.core.profileapproval.NtfyProfileApprovalPolicy
+import com.nuvio.tv.core.profileapproval.NtfyApprovalOutcome
+import com.nuvio.tv.core.profileapproval.PhoneApprovalPairingAction
 import com.nuvio.tv.core.sync.SetProfilePinResult
+import com.nuvio.tv.core.qr.QrCodeGenerator
 import com.nuvio.tv.data.remote.supabase.AvatarCatalogItem
 import com.nuvio.tv.data.remote.supabase.ProfileBackgroundCatalogItem
 import com.nuvio.tv.domain.model.UserProfile
@@ -183,6 +192,10 @@ private sealed interface ProfilePinOverlayState {
     data class VerifyCurrentForChange(override val profile: UserProfile) : ProfilePinOverlayState
     data class VerifyCurrentForRemove(override val profile: UserProfile) : ProfilePinOverlayState
     data class VerifyCurrentForDelete(override val profile: UserProfile) : ProfilePinOverlayState
+    data class VerifyCurrentForApproval(
+        override val profile: UserProfile,
+        val onVerified: () -> Unit
+    ) : ProfilePinOverlayState
 }
 
 private enum class ProfilePinEntryStage {
@@ -217,6 +230,8 @@ fun ProfileSelectionScreen(
     val isCopyingSettings by viewModel.isCopyingSettings.collectAsState()
     val profilePinEnabled by viewModel.profilePinEnabled.collectAsState()
     val isPinOperationInProgress by viewModel.isPinOperationInProgress.collectAsState()
+    val profileApprovalPairings by viewModel.profileApprovalPairings.collectAsState()
+    val phoneApprovalState by viewModel.phoneApprovalState.collectAsState()
     val avatarImageUrlsById = remember(avatarCatalog, profiles) {
         buildMap {
             avatarCatalog.forEach { avatar -> put(avatar.id, avatar.imageUrl) }
@@ -240,9 +255,73 @@ fun ProfileSelectionScreen(
     var settingsCopyError by remember { mutableStateOf<String?>(null) }
     var pinOverlayState by remember { mutableStateOf<ProfilePinOverlayState?>(null) }
     var pinOverlayError by remember { mutableStateOf<String?>(null) }
+    var profileApprovalTarget by remember { mutableStateOf<UserProfile?>(null) }
+    var profileApprovalError by remember { mutableStateOf<String?>(null) }
     var profileActionMessage by remember { mutableStateOf<String?>(null) }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                viewModel.cancelPhoneApproval()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.cancelPhoneApproval()
+        }
+    }
+
+    fun openProfileApproval(
+        profile: UserProfile,
+        onVerified: () -> Unit = { profileApprovalTarget = profile }
+    ) {
+        profileApprovalError = null
+        if (profilePinEnabled[profile.id] == true) {
+            pinOverlayError = null
+            pinOverlayState = ProfilePinOverlayState.VerifyCurrentForApproval(profile, onVerified)
+        } else {
+            onVerified()
+        }
+    }
+
+    fun updateProfileApproval(profile: UserProfile, action: PhoneApprovalPairingAction) {
+        viewModel.updatePhoneApprovalPairing(profile.id, action) { result ->
+            val message = when {
+                result.isFailure -> R.string.profile_phone_pairing_error
+                action == PhoneApprovalPairingAction.Regenerate -> R.string.profile_phone_pairing_regenerated
+                action == PhoneApprovalPairingAction.Disable -> R.string.profile_phone_pairing_disabled
+                else -> null
+            }?.let(context::getString)
+            if (action == PhoneApprovalPairingAction.Enable) profileApprovalError = message
+            else profileActionMessage = message
+        }
+    }
+
+    LaunchedEffect(phoneApprovalState) {
+        val message = when (val outcome = phoneApprovalState?.outcome) {
+            NtfyApprovalOutcome.Denied -> context.getString(R.string.profile_phone_approval_denied)
+            NtfyApprovalOutcome.TimedOut -> context.getString(R.string.profile_phone_approval_timeout)
+            is NtfyApprovalOutcome.RateLimited -> context.getString(
+                R.string.profile_phone_approval_rate_limited, outcome.retryAfterSeconds
+            )
+            NtfyApprovalOutcome.NotConfigured,
+            NtfyApprovalOutcome.Busy,
+            NtfyApprovalOutcome.Failed -> context.getString(R.string.profile_phone_approval_error)
+            NtfyApprovalOutcome.Approved, null -> null
+        }
+        if (message != null) {
+            profileActionMessage = message
+            viewModel.clearPhoneApprovalState()
+        }
+    }
+
     val onProfileFocusedChange = remember(onProfileFocusChanged, onProfileThemeFocused) {
         { profile: UserProfile? ->
+            if (focusedProfileId != profile?.id) {
+                viewModel.cancelPhoneApproval()
+            }
             focusedProfileId = profile?.id
             focusedAvatarColor = profile?.avatarColorHex?.let(::parseProfileColor) ?: Color(0xFF555555)
             Unit
@@ -286,7 +365,10 @@ fun ProfileSelectionScreen(
     }
 
     if (onBackPress != null) {
-        BackHandler(onBack = onBackPress)
+        BackHandler(onBack = {
+            viewModel.cancelPhoneApproval()
+            onBackPress()
+        })
     }
 
     LaunchedEffect(profiles, activeProfileId) {
@@ -420,13 +502,27 @@ fun ProfileSelectionScreen(
                 ProfilePinOverlay(
                     state = activePinOverlay,
                     isWorking = isPinOperationInProgress,
+                    phoneApprovalAvailable = activePinOverlay is ProfilePinOverlayState.Unlock &&
+                        profileApprovalPairings.containsKey(activePinOverlay.profile.id),
+                    phoneApprovalWaiting = phoneApprovalState?.let {
+                        it.profileId == activePinOverlay.profile.id && it.outcome == null
+                    } == true,
                     errorMessage = pinOverlayError,
                     onClearError = { pinOverlayError = null },
+                    onPhoneApproval = {
+                        viewModel.requestPhoneApproval(activePinOverlay.profile.id) {
+                            pinOverlayState = null
+                            pinOverlayError = null
+                            selectProfile(activePinOverlay.profile.id)
+                        }
+                    },
                     onDismiss = {
+                        viewModel.cancelPhoneApproval()
                         pinOverlayState = null
                         pinOverlayError = null
                     },
                     onSubmit = { pin ->
+                        viewModel.cancelPhoneApproval()
                         when (activePinOverlay) {
                             is ProfilePinOverlayState.Set -> {
                                 viewModel.setProfilePin(
@@ -520,6 +616,29 @@ fun ProfileSelectionScreen(
                                         } else {
                                             pinOverlayError = if (verify.retryAfterSeconds > 0) {
                                                 context.getString(R.string.profile_pin_locked, verify.retryAfterSeconds)
+                                            } else {
+                                                context.getString(R.string.profile_pin_incorrect)
+                                            }
+                                        }
+                                    }.onFailure {
+                                        pinOverlayError = context.getString(R.string.profile_pin_verify_error)
+                                    }
+                                }
+                            }
+
+                            is ProfilePinOverlayState.VerifyCurrentForApproval -> {
+                                viewModel.verifyProfilePin(activePinOverlay.profile.id, pin) { result ->
+                                    result.onSuccess { verify ->
+                                        if (verify.unlocked) {
+                                            pinOverlayError = null
+                                            pinOverlayState = null
+                                            activePinOverlay.onVerified()
+                                        } else {
+                                            pinOverlayError = if (verify.retryAfterSeconds > 0) {
+                                                context.getString(
+                                                    R.string.profile_pin_locked,
+                                                    verify.retryAfterSeconds
+                                                )
                                             } else {
                                                 context.getString(R.string.profile_pin_incorrect)
                                             }
@@ -702,6 +821,20 @@ fun ProfileSelectionScreen(
                     )
                 }
 
+                Button(
+                    onClick = {
+                        longPressedProfile = null
+                        openProfileApproval(profile)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.colors(
+                        containerColor = NuvioTheme.colors.BackgroundCard,
+                        contentColor = NuvioTheme.colors.TextPrimary
+                    )
+                ) {
+                    Text(stringResource(R.string.profile_phone_pairing))
+                }
+
                 if (profilePinEnabled[profile.id] == true) {
                     Button(
                         onClick = {
@@ -770,6 +903,34 @@ fun ProfileSelectionScreen(
                         } else {
                             settingsCopyError = context.getString(R.string.profile_copy_settings_error)
                         }
+                    }
+                }
+            )
+        }
+
+        profileApprovalTarget?.let { profile ->
+            ProfileApprovalPairingDialog(
+                profile = profile,
+                topic = profileApprovalPairings[profile.id],
+                errorMessage = profileApprovalError,
+                onDismiss = {
+                    profileApprovalError = null
+                    profileApprovalTarget = null
+                },
+                onEnable = {
+                    profileApprovalError = null
+                    updateProfileApproval(profile, PhoneApprovalPairingAction.Enable)
+                },
+                onRegenerate = {
+                    profileApprovalTarget = null
+                    openProfileApproval(profile) {
+                        updateProfileApproval(profile, PhoneApprovalPairingAction.Regenerate)
+                    }
+                },
+                onDisable = {
+                    profileApprovalTarget = null
+                    openProfileApproval(profile) {
+                        updateProfileApproval(profile, PhoneApprovalPairingAction.Disable)
                     }
                 }
             )
@@ -2058,9 +2219,12 @@ private fun EditProfileOverlay(
 private fun ProfilePinOverlay(
     state: ProfilePinOverlayState,
     isWorking: Boolean,
+    phoneApprovalAvailable: Boolean,
+    phoneApprovalWaiting: Boolean,
     errorMessage: String?,
     onClearError: () -> Unit,
     onDismiss: () -> Unit,
+    onPhoneApproval: () -> Unit,
     onSubmit: (String) -> Unit
 ) {
     val density = LocalDensity.current
@@ -2250,6 +2414,7 @@ private fun ProfilePinOverlay(
             state is ProfilePinOverlayState.VerifyCurrentForChange -> stringResource(R.string.profile_pin_overlay_change_verify_heading, state.profile.name)
             state is ProfilePinOverlayState.VerifyCurrentForRemove -> stringResource(R.string.profile_pin_overlay_remove_verify_heading, state.profile.name)
             state is ProfilePinOverlayState.VerifyCurrentForDelete -> stringResource(R.string.profile_pin_overlay_delete_verify_heading, state.profile.name)
+            state is ProfilePinOverlayState.VerifyCurrentForApproval -> stringResource(R.string.profile_phone_pairing_security_heading, state.profile.name)
             entryStage == ProfilePinEntryStage.Confirm -> stringResource(R.string.profile_pin_overlay_confirm_heading)
             else -> stringResource(R.string.profile_pin_overlay_set_heading, state.profile.name)
         }
@@ -2261,6 +2426,7 @@ private fun ProfilePinOverlay(
             state is ProfilePinOverlayState.VerifyCurrentForChange -> stringResource(R.string.profile_pin_overlay_change_verify_support)
             state is ProfilePinOverlayState.VerifyCurrentForRemove -> stringResource(R.string.profile_pin_overlay_remove_verify_support)
             state is ProfilePinOverlayState.VerifyCurrentForDelete -> stringResource(R.string.profile_pin_overlay_delete_verify_support)
+            state is ProfilePinOverlayState.VerifyCurrentForApproval -> stringResource(R.string.profile_phone_pairing_security_support)
             entryStage == ProfilePinEntryStage.Confirm -> stringResource(R.string.profile_pin_overlay_confirm_support)
             else -> stringResource(R.string.profile_pin_overlay_set_support)
         }
@@ -2316,10 +2482,33 @@ private fun ProfilePinOverlay(
                 lineHeight = 24.sp
             )
 
+            if (state is ProfilePinOverlayState.Unlock && phoneApprovalAvailable) {
+                Spacer(modifier = Modifier.height(18.dp))
+                Button(
+                    onClick = onPhoneApproval,
+                    enabled = !isWorking && !phoneApprovalWaiting,
+                    colors = ButtonDefaults.colors(
+                        containerColor = NuvioTheme.colors.BackgroundCard,
+                        contentColor = NuvioTheme.colors.TextPrimary,
+                        disabledContainerColor = NuvioTheme.colors.BackgroundCard.copy(alpha = 0.5f),
+                        disabledContentColor = NuvioTheme.colors.TextTertiary
+                    )
+                ) {
+                    Text(
+                        if (phoneApprovalWaiting) {
+                            stringResource(R.string.profile_phone_approval_waiting)
+                        } else {
+                            stringResource(R.string.profile_phone_approval_use_phone)
+                        }
+                    )
+                }
+            }
+
             if (state is ProfilePinOverlayState.Unlock ||
                 state is ProfilePinOverlayState.VerifyCurrentForChange ||
                 state is ProfilePinOverlayState.VerifyCurrentForRemove ||
-                state is ProfilePinOverlayState.VerifyCurrentForDelete
+                state is ProfilePinOverlayState.VerifyCurrentForDelete ||
+                state is ProfilePinOverlayState.VerifyCurrentForApproval
             ) {
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
@@ -2369,6 +2558,113 @@ private fun ProfilePinOverlay(
             ),
             cursorBrush = SolidColor(Color.Transparent)
         )
+    }
+}
+
+@Composable
+private fun ProfileApprovalPairingDialog(
+    profile: UserProfile,
+    topic: String?,
+    errorMessage: String?,
+    onDismiss: () -> Unit,
+    onEnable: () -> Unit,
+    onRegenerate: () -> Unit,
+    onDisable: () -> Unit
+) {
+    val topicUrl = topic?.let(NtfyProfileApprovalPolicy::topicWebUrl)
+    val qrBitmap = remember(topicUrl) {
+        topicUrl?.let { url ->
+            runCatching { QrCodeGenerator.generate(url, 420, margin = 1) }.getOrNull()
+        }
+    }
+
+    NuvioDialog(
+        onDismiss = onDismiss,
+        title = stringResource(R.string.profile_phone_pairing_title, profile.name),
+        subtitle = stringResource(R.string.profile_phone_pairing_subtitle),
+        width = 520.dp
+    ) {
+        if (topic == null || topicUrl == null) {
+            Text(
+                text = stringResource(R.string.profile_phone_pairing_not_enabled),
+                color = NuvioTheme.colors.TextSecondary,
+                fontSize = 16.sp
+            )
+            Button(
+                onClick = onEnable,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.colors(
+                    containerColor = NuvioTheme.colors.FocusBackground,
+                    contentColor = NuvioTheme.colors.TextPrimary
+                )
+            ) {
+                Text(stringResource(R.string.profile_phone_pairing_enable))
+            }
+        } else {
+            qrBitmap?.let { bitmap ->
+                Image(
+                    bitmap = bitmap.asImageBitmap(),
+                    contentDescription = stringResource(R.string.profile_phone_pairing_qr_description),
+                    modifier = Modifier
+                        .size(300.dp)
+                        .align(Alignment.CenterHorizontally)
+                )
+            }
+            Text(
+                text = stringResource(R.string.profile_phone_pairing_scan),
+                modifier = Modifier.fillMaxWidth(),
+                color = NuvioTheme.colors.TextPrimary,
+                fontSize = 16.sp,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = topicUrl,
+                modifier = Modifier.fillMaxWidth(),
+                color = NuvioTheme.colors.TextTertiary,
+                fontSize = 11.sp,
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = stringResource(R.string.profile_phone_pairing_bearer_warning),
+                color = Color(0xFFFFC46B),
+                fontSize = 14.sp
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md)
+            ) {
+                Button(
+                    onClick = onRegenerate,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.colors(
+                        containerColor = NuvioTheme.colors.BackgroundCard,
+                        contentColor = NuvioTheme.colors.TextPrimary
+                    )
+                ) {
+                    Text(stringResource(R.string.profile_phone_pairing_regenerate))
+                }
+                Button(
+                    onClick = onDisable,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.colors(
+                        containerColor = Color(0xFF4A2323),
+                        contentColor = NuvioTheme.colors.TextPrimary
+                    )
+                ) {
+                    Text(stringResource(R.string.profile_phone_pairing_disable))
+                }
+            }
+        }
+
+        if (!errorMessage.isNullOrBlank()) {
+            Text(
+                text = errorMessage,
+                color = Color(0xFFFF8E8E),
+                fontSize = 14.sp
+            )
+        }
     }
 }
 

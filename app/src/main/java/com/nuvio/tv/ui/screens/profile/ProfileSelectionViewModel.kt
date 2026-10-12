@@ -4,9 +4,13 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nuvio.tv.core.profile.ProfileManager
+import com.nuvio.tv.core.profileapproval.NtfyApprovalOutcome
+import com.nuvio.tv.core.profileapproval.NtfyProfileApprovalService
+import com.nuvio.tv.core.profileapproval.PhoneApprovalPairingAction
 import com.nuvio.tv.core.sync.ProfileSettingsSyncService
 import com.nuvio.tv.core.sync.ProfileSyncService
 import com.nuvio.tv.core.sync.SetProfilePinResult
+import com.nuvio.tv.data.local.ProfileApprovalPairingDataStore
 import com.nuvio.tv.data.local.ProfileLockStateDataStore
 import com.nuvio.tv.data.remote.supabase.AvatarCatalogItem
 import com.nuvio.tv.data.remote.supabase.AvatarRepository
@@ -19,6 +23,7 @@ import com.nuvio.tv.domain.model.UserProfile
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -31,6 +36,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
 import javax.inject.Inject
 
 sealed interface CreateProfileResult {
@@ -42,6 +48,8 @@ sealed interface CreateProfileResult {
     data object Failed : CreateProfileResult
 }
 
+data class PhoneApprovalState(val profileId: Int, val outcome: NtfyApprovalOutcome? = null)
+
 @HiltViewModel
 class ProfileSelectionViewModel @Inject constructor(
     private val profileManager: ProfileManager,
@@ -51,6 +59,8 @@ class ProfileSelectionViewModel @Inject constructor(
     private val profileBackgroundRepository: ProfileBackgroundRepository,
     memberAccessRepository: MemberAccessRepository,
     private val profileLockStateDataStore: ProfileLockStateDataStore,
+    private val profileApprovalPairingDataStore: ProfileApprovalPairingDataStore,
+    private val ntfyProfileApprovalService: NtfyProfileApprovalService,
     private val themeDataStore: com.nuvio.tv.data.local.ThemeDataStore
 ) : ViewModel() {
     val activeProfileId: StateFlow<Int> = profileManager.activeProfileId
@@ -93,8 +103,26 @@ class ProfileSelectionViewModel @Inject constructor(
     private val _isPinOperationInProgress = MutableStateFlow(false)
     val isPinOperationInProgress: StateFlow<Boolean> = _isPinOperationInProgress.asStateFlow()
 
+    val profileApprovalPairings: StateFlow<Map<Int, String>> =
+        profiles.flatMapLatest { profileList ->
+            profileApprovalPairingDataStore.observeTopics(profileList.map { it.id })
+        }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    private val _phoneApprovalState = MutableStateFlow<PhoneApprovalState?>(null)
+    val phoneApprovalState: StateFlow<PhoneApprovalState?> = _phoneApprovalState.asStateFlow()
+    private var phoneApprovalJob: Job? = null
+    private var phoneApprovalGeneration = 0L
+
     init {
         refreshProfilePinStates()
+        viewModelScope.launch {
+            profiles.collectLatest { profileList ->
+                profileList.forEach { profile ->
+                    profileSettingsSyncService.revalidatePhoneApprovalPairing(profile.id)
+                }
+            }
+        }
         viewModelScope.launch {
             hasProfileAvatarAccess.collectLatest { hasAccess ->
                 loadAvatarCatalog(hasAccess)
@@ -164,6 +192,7 @@ class ProfileSelectionViewModel @Inject constructor(
 
     fun selectProfile(id: Int, onComplete: () -> Unit, onFailure: () -> Unit) {
         if (isSelectingProfile) return
+        cancelPhoneApproval()
         isSelectingProfile = true
         viewModelScope.launch {
             try {
@@ -258,10 +287,61 @@ class ProfileSelectionViewModel @Inject constructor(
 
     fun deleteProfile(id: Int) {
         viewModelScope.launch {
+            cancelPhoneApproval()
             profileManager.deleteProfile(id)
             profileSyncService.deleteProfileData(id)
             profileSyncService.pushToRemote()
             refreshProfilePinStates()
+        }
+    }
+
+    fun updatePhoneApprovalPairing(
+        profileId: Int,
+        action: PhoneApprovalPairingAction,
+        onComplete: (Result<String?>) -> Unit
+    ) {
+        viewModelScope.launch {
+            onComplete(profileSettingsSyncService.updatePhoneApprovalPairing(profileId, action))
+        }
+    }
+
+    fun requestPhoneApproval(profileId: Int, onApproved: () -> Unit) {
+        if (phoneApprovalJob?.isActive == true) return
+        val profile = profiles.value.firstOrNull { it.id == profileId } ?: return
+        val generation = ++phoneApprovalGeneration
+        phoneApprovalJob = viewModelScope.launch {
+            _phoneApprovalState.value = PhoneApprovalState(profileId)
+            try {
+                val outcome = ntfyProfileApprovalService.requestUnlock(profileId, profile.name)
+                coroutineContext.ensureActive()
+                if (generation != phoneApprovalGeneration) return@launch
+                _phoneApprovalState.value = PhoneApprovalState(profileId, outcome)
+                if (outcome == NtfyApprovalOutcome.Approved) {
+                    _phoneApprovalState.value = null
+                    onApproved()
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } finally {
+                if (generation == phoneApprovalGeneration) {
+                    if (_phoneApprovalState.value?.outcome == null) _phoneApprovalState.value = null
+                    phoneApprovalJob = null
+                }
+            }
+        }
+    }
+
+    fun cancelPhoneApproval() {
+        phoneApprovalGeneration++
+        ntfyProfileApprovalService.cancelActiveRequest()
+        phoneApprovalJob?.cancel()
+        phoneApprovalJob = null
+        _phoneApprovalState.value = null
+    }
+
+    fun clearPhoneApprovalState() {
+        if (phoneApprovalJob?.isActive != true) {
+            _phoneApprovalState.value = null
         }
     }
 

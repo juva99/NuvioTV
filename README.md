@@ -27,6 +27,39 @@ cd NuvioTV
 
 Nuvio TV is built with Kotlin, Jetpack Compose, TV Material 3, and Media3. Development requires Android Studio, a JDK, and the Android SDK.
 
+## Phone approval for locked profiles
+
+In **Settings → Profiles → Manage Profiles**, open a profile's options and choose
+**Phone approval**. After the profile PIN check (when enabled), scan the QR code
+with the phone camera and subscribe to the topic in ntfy or its web/PWA app.
+Selecting **Approve with phone** on the TV sends a two-minute unlock request
+with **Yes** and **No** actions; the normal PIN unlock always remains available.
+The topic is a random bearer capability shared by the same authenticated account
+and profile across TVs. It is stored in the existing authenticated Supabase
+profile-settings blob, so equal numeric profile IDs in different accounts do not
+share a topic. Copying settings to another profile deliberately excludes the
+pairing. Signing out or resetting local account data only clears the local cache;
+it does not remotely revoke the shared pairing. Use the PIN-gated **Disable** or
+**Regenerate QR** actions to revoke or rotate it.
+
+Direct ntfy transport is a bearer capability: anyone who obtains the QR code or
+topic can subscribe and approve or deny requests for that profile. Nuvio does
+not provide an ACL through ntfy, so treat the QR/topic like a secret and
+regenerate it if it is exposed. Each TV request includes a bounded device name
+and uses a fresh response topic/token; only the first matching response is
+accepted. The TV revalidates the shared pairing before unlocking and fails
+closed on remote failure, cancellation, backgrounding, profile changes, or
+timeout. Pairings are refreshed for all profiles on the selection screen and
+kept out of automatic local-settings uploads and profile copies. Settings writes
+preserve the latest remote pairing rather than a cached topic. Initial setup and
+pairing changes are read back for confirmation, but the settings RPCs have no
+compare-and-swap: simultaneous setup or settings writes can still race and may
+require retrying. Atomic pairing updates require server support.
+The QR URL is intended for ntfy subscription in a phone app or web/PWA.
+HTTP actions are POST-only (no Safari GET approvals). An iOS proof of concept
+has been reported, but native iOS behavior has not been device-verified and is
+not asserted as compatible.
+
 ## Minimal fork
 
 `juva99/NuvioTV` is aligned with upstream's published `1.1.0-beta.5` tag.
