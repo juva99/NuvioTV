@@ -109,7 +109,9 @@ class ProfileSelectionViewModel @Inject constructor(
     val isPinOperationInProgress: StateFlow<Boolean> = _isPinOperationInProgress.asStateFlow()
 
     val profileApprovalPairings: StateFlow<Map<Int, String>> =
-        profileApprovalPairingDataStore.topics
+        profiles.flatMapLatest { profileList ->
+            profileApprovalPairingDataStore.observeTopics(profileList.map { it.id })
+        }
             .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     private val _phoneApprovalState = MutableStateFlow<PhoneApprovalState>(PhoneApprovalState.Idle)
@@ -297,7 +299,7 @@ class ProfileSelectionViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             onComplete(runCatching {
-                profileApprovalPairingDataStore.ensureTopic(profileId)
+                profileSettingsSyncService.ensurePhoneApprovalPairing(profileId).getOrThrow()
             })
         }
     }
@@ -308,7 +310,7 @@ class ProfileSelectionViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             onComplete(runCatching {
-                profileApprovalPairingDataStore.regenerateTopic(profileId)
+                profileSettingsSyncService.regeneratePhoneApprovalPairing(profileId).getOrThrow()
             })
         }
     }
@@ -319,7 +321,7 @@ class ProfileSelectionViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             onComplete(runCatching {
-                profileApprovalPairingDataStore.disable(profileId)
+                profileSettingsSyncService.disablePhoneApprovalPairing(profileId).getOrThrow()
             })
         }
     }

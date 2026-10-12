@@ -1,14 +1,11 @@
 package com.nuvio.tv.data.local
 
-import android.content.Context
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
 import com.nuvio.tv.core.profileapproval.NtfyProfileApprovalPolicy
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
@@ -16,86 +13,88 @@ import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private val Context.profileApprovalPairingDataStore: DataStore<Preferences> by preferencesDataStore(
-    name = "profile_approval_pairing",
-    corruptionHandler = androidx.datastore.core.handlers.ReplaceFileCorruptionHandler {
-        androidx.datastore.preferences.core.emptyPreferences()
-    }
-)
+const val PROFILE_APPROVAL_FEATURE = "profile_approval"
+const val PROFILE_APPROVAL_TOPIC_KEY = "topic"
 
 @Singleton
 class ProfileApprovalPairingDataStore @Inject constructor(
-    @ApplicationContext private val context: Context
+    private val profileDataStoreFactory: ProfileDataStoreFactory
 ) {
-    private val dataStore = context.profileApprovalPairingDataStore
-    private val topicsKey = stringPreferencesKey("profile_topics")
+    private val topicKey = stringPreferencesKey(PROFILE_APPROVAL_TOPIC_KEY)
     private val mutex = Mutex()
 
-    val topics: Flow<Map<Int, String>> = dataStore.data.map { prefs ->
-        decode(prefs[topicsKey])
+    fun observeTopic(profileId: Int): Flow<String?> =
+        profileDataStoreFactory.get(profileId, PROFILE_APPROVAL_FEATURE)
+            .data
+            .map { preferences ->
+                preferences[topicKey]?.takeIf(NtfyProfileApprovalPolicy::isProfileTopic)
+            }
+
+    fun observeTopics(profileIds: List<Int>): Flow<Map<Int, String>> {
+        if (profileIds.isEmpty()) return flowOf(emptyMap())
+        return combine(profileIds.distinct().map { profileId ->
+            observeTopic(profileId).map { topic -> profileId to topic }
+        }) { entries ->
+            entries.mapNotNull { (profileId, topic) -> topic?.let { profileId to it } }.toMap()
+        }
     }
 
     suspend fun topicFor(profileId: Int): String? = mutex.withLock {
-        topics.first()[profileId]
+        readTopic(profileId)
     }
 
     suspend fun ensureTopic(profileId: Int): String = mutex.withLock {
+        val store = profileDataStoreFactory.get(profileId, PROFILE_APPROVAL_FEATURE)
         var result: String? = null
-        dataStore.edit { prefs ->
-            val current = decode(prefs[topicsKey]).toMutableMap()
-            result = current[profileId] ?: NtfyProfileApprovalPolicy.generateProfileTopic()
-            current[profileId] = result!!
-            prefs[topicsKey] = encode(current)
+        store.edit { preferences ->
+            result = preferences[topicKey]?.takeIf(NtfyProfileApprovalPolicy::isProfileTopic)
+                ?: NtfyProfileApprovalPolicy.generateProfileTopic()
+            preferences[topicKey] = result!!
         }
         result!!
+    }
+
+    suspend fun setTopic(profileId: Int, topic: String) = mutex.withLock {
+        require(NtfyProfileApprovalPolicy.isProfileTopic(topic)) {
+            "Invalid ntfy profile topic"
+        }
+        profileDataStoreFactory.get(profileId, PROFILE_APPROVAL_FEATURE).edit { preferences ->
+            preferences[topicKey] = topic
+        }
     }
 
     suspend fun regenerateTopic(profileId: Int): String = mutex.withLock {
-        var result: String? = null
-        dataStore.edit { prefs ->
-            val current = decode(prefs[topicsKey]).toMutableMap()
-            result = NtfyProfileApprovalPolicy.generateProfileTopic()
-            current[profileId] = result!!
-            prefs[topicsKey] = encode(current)
+        val topic = NtfyProfileApprovalPolicy.generateProfileTopic()
+        profileDataStoreFactory.get(profileId, PROFILE_APPROVAL_FEATURE).edit { preferences ->
+            preferences[topicKey] = topic
         }
-        result!!
+        topic
     }
 
     suspend fun disable(profileId: Int) = mutex.withLock {
-        update { current ->
-            current.remove(profileId)
-            current
+        profileDataStoreFactory.get(profileId, PROFILE_APPROVAL_FEATURE).edit { preferences ->
+            preferences.remove(topicKey)
         }
     }
 
-    suspend fun removeProfile(profileId: Int) = disable(profileId)
-
-    suspend fun clearAll() = mutex.withLock {
-        dataStore.edit { prefs -> prefs.clear() }
-    }
-
-    private suspend fun update(transform: (MutableMap<Int, String>) -> Map<Int, String>) {
-        dataStore.edit { prefs ->
-            prefs[topicsKey] = encode(transform(decode(prefs[topicsKey]).toMutableMap()))
+    suspend fun removeProfile(profileId: Int) {
+        if (profileId == 1) {
+            disable(profileId)
+        } else {
+            profileDataStoreFactory.clearProfile(profileId)
         }
     }
 
-    private fun encode(map: Map<Int, String>): String =
-        map.entries
-            .filter { (id, topic) -> id > 0 && NtfyProfileApprovalPolicy.isProfileTopic(topic) }
-            .joinToString(separator = ",") { (id, topic) -> "$id=$topic" }
+    /**
+     * Profile-scoped stores are cleared by ProfileDataStoreFactory during an
+     * account reset. This method remains for the reset service API and clears
+     * no unrelated profile settings.
+     */
+    suspend fun clearAll() = Unit
 
-    private fun decode(raw: String?): Map<Int, String> {
-        if (raw.isNullOrBlank()) return emptyMap()
-        return raw.split(",").mapNotNull { entry ->
-            val separator = entry.indexOf('=')
-            if (separator <= 0 || separator == entry.lastIndex) return@mapNotNull null
-            val id = entry.substring(0, separator).toIntOrNull() ?: return@mapNotNull null
-            val topic = entry.substring(separator + 1)
-            if (id <= 0 || !NtfyProfileApprovalPolicy.isProfileTopic(topic)) {
-                return@mapNotNull null
-            }
-            id to topic
-        }.toMap()
-    }
+    private suspend fun readTopic(profileId: Int): String? =
+        profileDataStoreFactory.get(profileId, PROFILE_APPROVAL_FEATURE)
+            .data
+            .first()[topicKey]
+            ?.takeIf(NtfyProfileApprovalPolicy::isProfileTopic)
 }

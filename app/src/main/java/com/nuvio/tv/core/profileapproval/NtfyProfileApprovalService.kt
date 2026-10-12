@@ -1,6 +1,10 @@
 package com.nuvio.tv.core.profileapproval
 
-import com.nuvio.tv.data.local.ProfileApprovalPairingDataStore
+import android.content.Context
+import com.nuvio.tv.core.auth.AuthManager
+import com.nuvio.tv.core.auth.currentDeviceClientMetadata
+import com.nuvio.tv.core.sync.ProfileSettingsSyncService
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -40,7 +44,9 @@ sealed interface NtfyApprovalOutcome {
 @Singleton
 class NtfyProfileApprovalService @Inject constructor(
     @Named("ntfy") private val client: OkHttpClient,
-    private val pairingDataStore: ProfileApprovalPairingDataStore
+    private val profileSettingsSyncService: ProfileSettingsSyncService,
+    private val authManager: AuthManager,
+    @ApplicationContext private val context: Context
 ) {
     private val activeRequestLock = Any()
     private var activeRequest: ActiveRequest? = null
@@ -48,7 +54,12 @@ class NtfyProfileApprovalService @Inject constructor(
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun requestUnlock(profileId: Int, profileName: String): NtfyApprovalOutcome {
-        val profileTopic = pairingDataStore.topicFor(profileId)
+        val accountId = authManager.currentUserId ?: return NtfyApprovalOutcome.Failed
+        val pairingResult = profileSettingsSyncService
+            .revalidatePhoneApprovalPairing(profileId)
+        if (authManager.currentUserId != accountId) return NtfyApprovalOutcome.Failed
+        if (pairingResult.isFailure) return NtfyApprovalOutcome.Failed
+        val profileTopic = pairingResult.getOrNull()
             ?: return NtfyApprovalOutcome.NotConfigured
         val request = synchronized(activeRequestLock) {
             if (activeRequest != null) return NtfyApprovalOutcome.Busy
@@ -64,6 +75,7 @@ class NtfyProfileApprovalService @Inject constructor(
             ActiveRequest(
                 profileId = profileId,
                 profileTopic = profileTopic,
+                accountId = accountId,
                 responseTopic = NtfyProfileApprovalPolicy.generateResponseTopic(),
                 responseToken = NtfyProfileApprovalPolicy.generateResponseToken()
             ).also { activeRequest = it }
@@ -73,12 +85,24 @@ class NtfyProfileApprovalService @Inject constructor(
             val outcome = withTimeout(NtfyProfileApprovalPolicy.REQUEST_TIMEOUT_MS) {
                 executeRequest(request, profileName)
             }
-            if (outcome == NtfyApprovalOutcome.Approved &&
-                pairingDataStore.topicFor(request.profileId) != request.profileTopic
-            ) {
-                NtfyApprovalOutcome.Failed
-            } else {
+            if (outcome != NtfyApprovalOutcome.Approved) {
                 outcome
+            } else {
+                if (authManager.currentUserId != request.accountId) {
+                    NtfyApprovalOutcome.Failed
+                } else {
+                    val currentTopic = profileSettingsSyncService
+                        .revalidatePhoneApprovalPairing(request.profileId)
+                        .getOrNull()
+                    if (
+                        authManager.currentUserId == request.accountId &&
+                        currentTopic == request.profileTopic
+                    ) {
+                        NtfyApprovalOutcome.Approved
+                    } else {
+                        NtfyApprovalOutcome.Failed
+                    }
+                }
             }
         } catch (_: TimeoutCancellationException) {
             NtfyApprovalOutcome.TimedOut
@@ -122,7 +146,11 @@ class NtfyProfileApprovalService @Inject constructor(
             val (call, response) = openSubscription(request, subscriptionRequest)
             try {
                 currentCoroutineContext().ensureActive()
-                publishUnlockRequest(request, profileName)
+                publishUnlockRequest(
+                    request = request,
+                    profileName = profileName,
+                    deviceName = currentDeviceClientMetadata(context).deviceName
+                )
                 val source = response.body?.source() ?: throw IOException("Missing ntfy response body")
                 return withContext(Dispatchers.IO) {
                     readFirstMatchingResponse(source, request)
@@ -168,13 +196,15 @@ class NtfyProfileApprovalService @Inject constructor(
 
     private suspend fun publishUnlockRequest(
         request: ActiveRequest,
-        profileName: String
+        profileName: String,
+        deviceName: String
     ) = withContext(Dispatchers.IO) {
         val body = NtfyProfileApprovalPolicy.buildNotificationJson(
             profileName = profileName,
             profileTopic = request.profileTopic,
             responseTopic = request.responseTopic,
-            responseToken = request.responseToken
+            responseToken = request.responseToken,
+            deviceName = deviceName
         ).toRequestBody(JSON_MEDIA_TYPE)
         val publishRequest = Request.Builder()
             .url(NtfyProfileApprovalPolicy.NTFY_BASE_URL)
@@ -221,6 +251,7 @@ class NtfyProfileApprovalService @Inject constructor(
     private class ActiveRequest(
         val profileId: Int,
         val profileTopic: String,
+        val accountId: String,
         val responseTopic: String,
         val responseToken: String
     ) {

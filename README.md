@@ -34,15 +34,30 @@ In **Settings → Profiles → Manage Profiles**, open a profile's options and c
 with the phone camera and subscribe to the topic in ntfy or its web/PWA app.
 Selecting **Approve with phone** on the TV sends a two-minute unlock request
 with **Yes** and **No** actions; the normal PIN unlock always remains available.
-Pairing is local to this TV/profile and is removed when the profile is deleted or
-the account is reset.
+The topic is a random bearer capability shared by the same authenticated account
+and profile across TVs. It is stored in the existing authenticated Supabase
+profile-settings blob, so equal numeric profile IDs in different accounts do not
+share a topic. Copying settings to another profile deliberately excludes the
+pairing. Signing out or resetting local account data only clears the local cache;
+it does not remotely revoke the shared pairing. Use the PIN-gated **Disable** or
+**Regenerate QR** actions to revoke or rotate it.
 
 Direct ntfy transport is a bearer capability: anyone who obtains the QR code or
 topic can subscribe and approve or deny requests for that profile. Nuvio does
 not provide an ACL through ntfy, so treat the QR/topic like a secret and
-regenerate it if it is exposed. Requests use fresh response topics/tokens,
-accept only the first matching response, and fail closed after cancellation,
-backgrounding, profile changes, or timeout.
+regenerate it if it is exposed. Each TV request includes a bounded device name
+and uses a fresh response topic/token; only the first matching response is
+accepted. The TV revalidates the shared pairing before unlocking and fails
+closed on remote failure, cancellation, backgrounding, profile changes, or
+timeout. The existing settings RPCs provide no atomic compare-and-swap claim:
+initial pairing is read back and stabilized, and a detected competing claim
+fails rather than silently accepting a different candidate. This is not an
+atomic first-writer guarantee; a truly simultaneous first-time setup may need
+to be retried because the existing server API has no client-visible CAS.
+The QR URL is intended for ntfy subscription in a phone app or web/PWA.
+HTTP actions are POST-only (no Safari GET approvals). An iOS proof of concept
+has been reported, but native iOS behavior has not been device-verified and is
+not asserted as compatible.
 
 ## Minimal fork
 

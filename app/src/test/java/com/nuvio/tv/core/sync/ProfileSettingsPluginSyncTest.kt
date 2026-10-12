@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import com.nuvio.tv.TestPreferencesStore
 import com.nuvio.tv.core.auth.AuthManager
 import com.nuvio.tv.core.profile.ProfileManager
+import com.nuvio.tv.data.local.PROFILE_APPROVAL_FEATURE
+import com.nuvio.tv.data.local.ProfileApprovalPairingDataStore
 import com.nuvio.tv.data.local.PluginDataStore
 import com.nuvio.tv.data.local.ProfileDataStoreFactory
 import com.nuvio.tv.domain.model.UserProfile
@@ -19,6 +21,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
+import io.mockk.coVerify
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -252,7 +255,109 @@ class ProfileSettingsPluginSyncTest {
         assertTrue(harness.pushes.isEmpty())
     }
 
-    private fun harness(profileId: Int = 1, authenticated: Boolean = false): Harness {
+    @Test
+    fun `two authenticated TVs converge on the same shared profile pairing`() = runTest(dispatcher) {
+        val remote = mutableMapOf<Int, JsonObject>()
+        val firstTv = harness(profileId = 1, authenticated = true, remote = remote)
+        val secondTv = harness(profileId = 1, authenticated = true, remote = remote)
+
+        val firstTopic = firstTv.service.ensurePhoneApprovalPairing(1).getOrThrow()
+        val secondTopic = secondTv.service.ensurePhoneApprovalPairing(1).getOrThrow()
+
+        assertEquals(firstTopic, secondTopic)
+        assertEquals(
+            firstTopic,
+            remote.getValue(1).getValue("features").jsonObject
+                .getValue("profile_approval").jsonObject
+                .getValue("topic").jsonObject
+                .getValue("value").jsonPrimitive.content
+        )
+    }
+
+    @Test
+    fun `equal numeric profile IDs in separate authenticated accounts stay isolated`() = runTest(dispatcher) {
+        val firstAccount = harness(profileId = 2, authenticated = true)
+        val secondAccount = harness(profileId = 2, authenticated = true)
+
+        val firstTopic = firstAccount.service.ensurePhoneApprovalPairing(2).getOrThrow()
+        val secondTopic = secondAccount.service.ensurePhoneApprovalPairing(2).getOrThrow()
+
+        assertFalse(firstTopic == secondTopic)
+        assertFalse(firstAccount.remote === secondAccount.remote)
+        assertEquals(firstTopic, accountTopic(firstAccount.remote, 2))
+        assertEquals(secondTopic, accountTopic(secondAccount.remote, 2))
+    }
+
+    @Test
+    fun `missing remote pairing does not reuse a stale local account pairing`() = runTest(dispatcher) {
+        val oldAccountTopic = "nuvio-" + "a".repeat(48)
+        val harness = harness(profileId = 2, authenticated = true)
+        harness.store(2, PROFILE_APPROVAL_FEATURE).edit { preferences ->
+            preferences[stringPreferencesKey("topic")] = oldAccountTopic
+        }
+
+        val newTopic = harness.service.ensurePhoneApprovalPairing(2).getOrThrow()
+
+        assertFalse(newTopic == oldAccountTopic)
+        assertEquals(newTopic, accountTopic(harness.remote, 2))
+    }
+
+    @Test
+    fun `copying settings preserves target pairing and excludes source pairing`() = runTest(dispatcher) {
+        val sourceTopic = "nuvio-" + "1".repeat(48)
+        val targetTopic = "nuvio-" + "2".repeat(48)
+        val remote = mutableMapOf(
+            2 to settingsWithApprovalTopic(sourceTopic, theme = "source"),
+            3 to settingsWithApprovalTopic(targetTopic, theme = "target")
+        )
+        val harness = harness(profileId = 1, authenticated = true, remote = remote)
+        coEvery { harness.pairingStore.topicFor(3) } returns targetTopic
+
+        harness.service.copyProfileSetup(
+            sourceProfileId = 2,
+            targetProfileId = 3
+        ).getOrThrow()
+
+        assertEquals(sourceTopic, accountTopic(remote, 2))
+        assertEquals(targetTopic, accountTopic(remote, 3))
+        assertEquals(
+            "source",
+            remote.getValue(3).getValue("features").jsonObject
+                .getValue("theme_settings").jsonObject
+                .getValue("theme").jsonObject
+                .getValue("value").jsonPrimitive.content
+        )
+        assertTrue(harness.copyRequests.isEmpty())
+        coVerify { harness.pairingStore.setTopic(3, targetTopic) }
+    }
+
+    @Test
+    fun `copying provider credentials skips TV copy in the setup RPC`() = runTest(dispatcher) {
+        val sourceTopic = "nuvio-" + "1".repeat(48)
+        val targetTopic = "nuvio-" + "2".repeat(48)
+        val remote = mutableMapOf(
+            2 to settingsWithApprovalTopic(sourceTopic),
+            3 to settingsWithApprovalTopic(targetTopic)
+        )
+        val harness = harness(profileId = 1, authenticated = true, remote = remote)
+
+        harness.service.copyProfileSetup(
+            sourceProfileId = 2,
+            targetProfileId = 3,
+            copyProviderCredentials = true
+        ).getOrThrow()
+
+        val params = harness.copyRequests.single()
+        assertEquals("false", params.getValue("p_copy_tv").jsonPrimitive.content)
+        assertEquals("true", params.getValue("p_copy_provider_credentials").jsonPrimitive.content)
+        assertEquals(targetTopic, accountTopic(remote, 3))
+    }
+
+    private fun harness(
+        profileId: Int = 1,
+        authenticated: Boolean = false,
+        remote: MutableMap<Int, JsonObject> = mutableMapOf()
+    ): Harness {
         val stores = mutableMapOf<Pair<Int, String>, TestPreferencesStore>()
         val factory = mockk<ProfileDataStoreFactory>()
         every { factory.get(any(), any()) } answers {
@@ -273,39 +378,84 @@ class ProfileSettingsPluginSyncTest {
         every { authManager.isAuthenticated } returns authenticated
         val identity = mockk<SyncClientIdentity>()
         every { identity.currentClientId() } returns "nuvio-tv-plugin-sync-test"
-        val remote = mutableMapOf<Int, JsonObject>()
         val pulls = mutableListOf<Int>()
         val pushes = mutableListOf<Int>()
+        val pairingStore = mockk<ProfileApprovalPairingDataStore>(relaxed = true)
+        coEvery { pairingStore.topicFor(any()) } returns null
         val postgrest = mockk<Postgrest>()
         every { postgrest.serializer } returns KotlinXSerializer()
+        val copyRequests = mutableListOf<JsonObject>()
         coEvery { postgrest.rpc(any(), any<JsonObject>()) } answers {
-            val params = secondArg<JsonObject>()
-            val requestedProfile = params.getValue("p_profile_id").jsonPrimitive.int
-            val response = when (firstArg<String>()) {
-                "sync_push_profile_settings_blob" -> {
-                    pushes += requestedProfile
-                    remote[requestedProfile] = params.getValue("p_settings_json").jsonObject
-                    ""
+            val method = firstArg<String>()
+            if (method == "sync_copy_profile_setup") {
+                val params = secondArg<JsonObject>()
+                val sourceProfileId = params.getValue("p_source_profile_id").jsonPrimitive.int
+                val targetProfileId = params.getValue("p_target_profile_id").jsonPrimitive.int
+                copyRequests += params
+                check(!params.getValue("p_copy_tv").jsonPrimitive.content.toBoolean())
+                PostgrestResult(
+                    JsonArray(listOf(buildJsonObject {
+                        put("source_profile_id", sourceProfileId)
+                        put("target_profile_id", targetProfileId)
+                        put("tv_status", "not_selected")
+                        put("provider_credentials_status", "unchanged")
+                    })).toString(),
+                    Headers.Empty,
+                    postgrest
+                )
+            } else {
+                val params = secondArg<JsonObject>()
+                val requestedProfile = params.getValue("p_profile_id").jsonPrimitive.int
+                val response = when (method) {
+                    "sync_push_profile_settings_blob" -> {
+                        pushes += requestedProfile
+                        remote[requestedProfile] = params.getValue("p_settings_json").jsonObject
+                        ""
+                    }
+                    "sync_pull_profile_settings_blob" -> {
+                        pulls += requestedProfile
+                        val blob = remote[requestedProfile]
+                        JsonArray(if (blob == null) emptyList() else listOf(buildJsonObject {
+                            put("profile_id", requestedProfile)
+                            put("settings_json", blob)
+                        })).toString()
+                    }
+                    else -> error("Unexpected RPC")
                 }
-                "sync_pull_profile_settings_blob" -> {
-                    pulls += requestedProfile
-                    val blob = remote[requestedProfile]
-                    JsonArray(if (blob == null) emptyList() else listOf(buildJsonObject {
-                        put("profile_id", requestedProfile)
-                        put("settings_json", blob)
-                    })).toString()
-                }
-                else -> error("Unexpected RPC")
+                PostgrestResult(response, Headers.Empty, postgrest)
             }
-            PostgrestResult(response, Headers.Empty, postgrest)
         }
         val service = ProfileSettingsSyncService(
             authManager, postgrest, profileManager, factory, identity,
+            pairingStore,
             mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true), mockk(relaxed = true)
         )
         services += service
         val plugins = PluginDataStore(mockk(relaxed = true), Moshi.Builder().build(), factory, profileManager)
-        return Harness(service, plugins, factory, remote, pulls, pushes)
+        return Harness(service, plugins, factory, remote, pulls, pushes, pairingStore, copyRequests)
+    }
+
+    private fun accountTopic(remote: Map<Int, JsonObject>, profileId: Int): String =
+        remote.getValue(profileId).getValue("features").jsonObject
+            .getValue("profile_approval").jsonObject
+            .getValue("topic").jsonObject
+            .getValue("value").jsonPrimitive.content
+
+    private fun settingsWithApprovalTopic(topic: String, theme: String? = null) = buildJsonObject {
+        put("version", 1)
+        put("features", buildJsonObject {
+            put("profile_approval", buildJsonObject {
+                put("topic", buildJsonObject {
+                    put("type", "string")
+                    put("value", topic)
+                })
+            })
+            if (theme != null) {
+                put("theme_settings", buildJsonObject {
+                    put("theme", encodedString(theme))
+                })
+            }
+        })
     }
 
     private fun grouping(enabled: Boolean) = buildJsonObject {
@@ -338,7 +488,9 @@ class ProfileSettingsPluginSyncTest {
         val factory: ProfileDataStoreFactory,
         val remote: MutableMap<Int, JsonObject>,
         val pulls: MutableList<Int>,
-        val pushes: MutableList<Int>
+        val pushes: MutableList<Int>,
+        val pairingStore: ProfileApprovalPairingDataStore,
+        val copyRequests: MutableList<JsonObject>
     ) {
         fun store(profileId: Int, feature: String) = factory.get(profileId, feature) as TestPreferencesStore
         fun pluginStore(profileId: Int) = store(profileId, PluginDataStore.FEATURE)

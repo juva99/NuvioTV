@@ -79,28 +79,28 @@ object NtfyProfileApprovalPolicy {
     }
 
     /**
-     * Uses ntfy's JSON action format. The ntfy Android and iOS clients execute
-     * these as HTTP POST requests, so no browser/GET side effect is involved.
+     * Uses ntfy's JSON action format with HTTP POST actions. No Safari/browser
+     * GET approval is emitted; native iOS behavior remains unverified.
      */
     fun buildNotificationJson(
         profileName: String,
         profileTopic: String,
         responseTopic: String,
-        responseToken: String
+        responseToken: String,
+        deviceName: String = "Android TV"
     ): String {
         require(isProfileTopic(profileTopic)) { "Invalid ntfy profile topic" }
         val responseUrl = responseTopicUrl(responseTopic)
-        val safeProfileName = profileName
-            .replace('\r', ' ')
-            .replace('\n', ' ')
-            .trim()
-            .take(80)
-            .ifBlank { "profile" }
+        val safeProfileName = sanitizeDisplayName(profileName, "profile", 80)
+        val safeDeviceName = sanitizeDisplayName(deviceName, "Android TV", 64)
 
         return buildJsonObject {
             put("topic", profileTopic)
             put("title", "Nuvio TV unlock request")
-            put("message", "Allow Nuvio TV to open the \"$safeProfileName\" profile?")
+            put(
+                "message",
+                "Allow Nuvio TV on \"$safeDeviceName\" to open the \"$safeProfileName\" profile?"
+            )
             put("priority", 5)
             put("actions", buildJsonArray {
                 add(buildJsonObject {
@@ -122,6 +122,14 @@ object NtfyProfileApprovalPolicy {
             })
         }.toString()
     }
+
+    private fun sanitizeDisplayName(value: String, fallback: String, maxLength: Int): String =
+        value
+            .map { character -> if (character.isISOControl()) ' ' else character }
+            .joinToString("")
+            .trim()
+            .take(maxLength)
+            .ifBlank { fallback }
 
     private fun randomHex(byteCount: Int): String {
         val bytes = ByteArray(byteCount)

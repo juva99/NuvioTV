@@ -89,6 +89,71 @@ class NtfyProfileApprovalPolicyTest {
     }
 
     @Test
+    fun `concurrent TVs get distinct response capabilities and visible device names`() {
+        val profileTopic = NtfyProfileApprovalPolicy.generateProfileTopic()
+        val firstResponseTopic = NtfyProfileApprovalPolicy.generateResponseTopic()
+        val secondResponseTopic = NtfyProfileApprovalPolicy.generateResponseTopic()
+        val firstToken = NtfyProfileApprovalPolicy.generateResponseToken()
+        val secondToken = NtfyProfileApprovalPolicy.generateResponseToken()
+
+        val first = json.parseToJsonElement(
+            NtfyProfileApprovalPolicy.buildNotificationJson(
+                profileName = "Living room",
+                profileTopic = profileTopic,
+                responseTopic = firstResponseTopic,
+                responseToken = firstToken,
+                deviceName = "TV downstairs"
+            )
+        ).jsonObject
+        val second = json.parseToJsonElement(
+            NtfyProfileApprovalPolicy.buildNotificationJson(
+                profileName = "Living room",
+                profileTopic = profileTopic,
+                responseTopic = secondResponseTopic,
+                responseToken = secondToken,
+                deviceName = "TV upstairs"
+            )
+        ).jsonObject
+
+        assertNotEquals(
+            first.getValue("actions").jsonArray[0].jsonObject.getValue("url"),
+            second.getValue("actions").jsonArray[0].jsonObject.getValue("url")
+        )
+        assertTrue(
+            first.getValue("message").jsonPrimitive.content.contains("TV downstairs")
+        )
+        assertTrue(
+            second.getValue("message").jsonPrimitive.content.contains("TV upstairs")
+        )
+        assertNull(
+            NtfyProfileApprovalPolicy.parseResponsePayload(
+                NtfyProfileApprovalPolicy.responsePayload(
+                    firstToken,
+                    NtfyApprovalDecision.YES
+                ),
+                secondToken
+            )
+        )
+    }
+
+    @Test
+    fun `notification labels are bounded and control characters are sanitized`() {
+        val notification = json.parseToJsonElement(
+            NtfyProfileApprovalPolicy.buildNotificationJson(
+                profileName = "profile\n".repeat(100),
+                profileTopic = NtfyProfileApprovalPolicy.generateProfileTopic(),
+                responseTopic = NtfyProfileApprovalPolicy.generateResponseTopic(),
+                responseToken = NtfyProfileApprovalPolicy.generateResponseToken(),
+                deviceName = "device\r\n\t".repeat(100)
+            )
+        ).jsonObject
+
+        val message = notification.getValue("message").jsonPrimitive.content
+        assertTrue(message.length <= 200)
+        assertTrue(message.none(Char::isISOControl))
+    }
+
+    @Test
     fun `retry gate applies cooldown after cancellation or timeout`() {
         val gate = NtfyApprovalRetryGate(cooldownMs = 5_000L)
 
