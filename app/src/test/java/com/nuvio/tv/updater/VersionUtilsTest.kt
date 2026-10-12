@@ -26,6 +26,16 @@ class VersionUtilsTest {
     }
 
     @Test
+    fun `fork revision upgrades its baseline without outranking future upstream releases`() {
+        val fork = "1.1.0-beta.5.fork.1"
+        assertTrue(VersionUtils.isPrerelease(fork))
+        assertTrue(VersionUtils.isRemoteNewer(fork, "1.1.0-beta.5"))
+        assertTrue(VersionUtils.isRemoteNewer("1.1.0-beta.5.fork.2", fork))
+        assertTrue(VersionUtils.isRemoteNewer("1.1.0-beta.6", fork))
+        assertTrue(VersionUtils.isRemoteNewer("1.1.0", fork))
+    }
+
+    @Test
     fun `prerelease for a later minor is newer than current stable`() {
         assertTrue(VersionUtils.isRemoteNewer("1.1.0-beta.1", "1.0.3"))
     }

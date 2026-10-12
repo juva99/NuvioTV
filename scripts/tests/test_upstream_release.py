@@ -20,9 +20,17 @@ class UpstreamReleaseTests(unittest.TestCase):
         self.assertEqual(release_channel("v1.1.0-rc.2"), "true")
         self.assertEqual(release_channel("1.1.0"), "false")
 
+    def test_explicit_fork_revisions_are_prereleases(self):
+        for tag in ("1.1.0-beta.5.fork.1", "v1.1.0-rc.2.fork.3", "1.1.0-fork.1"):
+            with self.subTest(tag=tag):
+                self.assertEqual(release_channel(tag), "true")
+
     def test_manual_release_rejects_invalid_or_unrecognized_tags(self):
-        for tag in ("latest", "1.1.0-beta", "1.1.0-dev.5", "1.1.0\n--draft"):
-            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, "Invalid upstream"):
+        for tag in (
+            "latest", "1.1.0-beta", "1.1.0-dev.5", "1.1.0\n--draft",
+            "1.1.0-beta.5-fork.1", "1.1.0-beta.5.fork.0", "1.1.0-fork.01",
+        ):
+            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, "Invalid release tag"):
                 release_channel(tag)
 
     def setUp(self):
@@ -41,6 +49,7 @@ class UpstreamReleaseTests(unittest.TestCase):
             release("1.1.0-beta.2", "2026-09-25T00:00:00Z"),
             release("1.1.0", "2026-09-26T00:00:00Z", prerelease=True),
             release("1.2.0", "2026-09-27T00:00:00Z", draft=True),
+            release("1.1.0-fork.1", "2026-09-28T00:00:00Z"),
         ]), {"pending": "false"})
 
     def test_keeps_upstream_tag_and_advances_legacy_version_code(self):

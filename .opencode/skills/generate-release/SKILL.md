@@ -35,16 +35,16 @@ git status --short --branch
 
 The dispatch inputs are required:
 
-- `release_tag`: use a published upstream tag, for example `1.1.0` or, for an explicitly requested manual beta, `1.1.0-beta.5`.
+- `release_tag`: use a published upstream tag, or an explicitly approved unique fork revision such as `1.1.0-beta.5.fork.1` when that baseline was already released. A stable baseline uses `1.1.0-fork.1`.
 - `release_title`: human-readable GitHub release title.
 - `version_code`: integer greater than the last published Android version code.
 - `release_notes`: Markdown release notes.
 
 Before dispatching:
 
-1. Find the latest fork release and published upstream tag. Do not import unreleased `dev` commits. Automatic tracking is stable-only; an explicitly requested manual release may use the latest numbered beta/RC tag.
+1. Find the latest fork release and published upstream tag. Do not import unreleased upstream `dev` commits. Automatic tracking is stable-only; an explicitly requested manual release may use the latest numbered beta/RC tag or a unique fork revision of the published baseline with approved merged fork changes.
 2. Read the `nuvio-fork-version-code` release-note marker. Legacy subtitle-sync builds use `2000 + N`; the next fork code must exceed all previous codes.
-3. Verify the selected tag does not exist on the fork remote. A local upstream tag with the same name is expected.
+3. Verify the selected tag does not exist on the fork remote. For fork revisions, confirm the published upstream baseline and use `.fork.N` after a beta/RC number so the updater still orders the next upstream version correctly.
 4. Summarize user-visible changes from the commits since the previous release. Do not expose secrets, tokens, subtitle URLs with credentials, or internal implementation noise.
 5. Dispatch only after the user requested publishing or explicitly approved the exact release inputs.
 

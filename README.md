@@ -70,7 +70,8 @@ GitHub sync-failure reporting, and associated authorization UI have been removed
 The remaining fork changes are permanent signing and in-app updates for the
 existing `com.nuvio.tv.debug` installation, release automation, IntroDB and avatar
 URL defaults, RTL subtitle punctuation, app-language playback messages, and
-protection against next-episode skipping from stale playback samples.
+protection against next-episode skipping from stale playback samples, and
+phone approval for locked profiles.
 The RTL checks use small synthetic cues rather than the old sync fixtures.
 
 ## Fork release automation
@@ -83,7 +84,7 @@ releases are not automatically imported.
 
 Each release is merged into `dev` while retaining only the documented fork
 changes. **Minimal Fork Release** then runs upstream AutoSync and focused
-player/updater tests, builds all five benchmark APKs, and checks their application
+player/updater/profile-approval tests, builds all five benchmark APKs, and checks their application
 ID, version code, permanent signing certificate, and Dolby Vision native library.
 Fork releases use the upstream stable tag and are published as stable releases,
 so migrated apps can use the standard updater without a special subtitle-sync channel.
@@ -123,6 +124,12 @@ An explicitly requested manual release can publish a numbered upstream beta or
 release candidate through **Minimal Fork Release**, with the correct prerelease
 flag and the same legacy upgrade entries. This does not enable automatic beta
 tracking.
+For an explicitly requested fork-only update to an already published baseline,
+use a unique prerelease tag such as `1.1.0-beta.5.fork.1` (or `1.1.0-fork.1`
+for a stable baseline). Increment the fork revision and Android version code;
+never reuse the upstream tag. The dotted suffix on beta/RC baselines preserves
+updater ordering below the next upstream beta/RC and final release. This does
+not import unreleased upstream changes or enable automatic beta tracking.
 
 ## License
 

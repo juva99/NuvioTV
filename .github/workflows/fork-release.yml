@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Published upstream tag, for example 1.1.0 or 1.1.0-beta.5"
+        description: "Upstream tag or manual fork revision, e.g. 1.1.0-beta.5.fork.1"
         required: true
         type: string
       release_title:
@@ -99,6 +99,9 @@ jobs:
             [[ "$status" == 2 ]] || exit "$status"
           fi
 
+      - name: Validate release tooling
+        run: PYTHONPATH=scripts python3 -m unittest discover -s scripts/tests -q
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -157,7 +160,7 @@ jobs:
             echo "NUVIO_GITHUB_REPO=${{ github.event.repository.name }}"
           } >> "$GITHUB_ENV"
 
-      - name: Test upstream AutoSync and retained fork fixes
+      - name: Test upstream AutoSync, profile approval, and retained fork fixes
         run: |
           ./gradlew :app:testFullDebugUnitTest \
             --tests "com.nuvio.tv.ui.screens.player.autosync.*" \
@@ -166,6 +169,8 @@ jobs:
             --tests "com.nuvio.tv.ui.screens.player.NaturalPlaybackCompletionRulesTest" \
             --tests "com.nuvio.tv.ui.screens.player.PlayerNextEpisodeRulesTest" \
             --tests "com.nuvio.tv.ui.screens.player.SkipIntroVisibilityRulesTest" \
+            --tests "com.nuvio.tv.core.profileapproval.*" \
+            --tests "com.nuvio.tv.core.sync.ProfileSettingsPluginSyncTest" \
             --tests "com.nuvio.tv.updater.*"
 
       - name: Build benchmark APKs

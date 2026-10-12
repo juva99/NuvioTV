@@ -17,8 +17,12 @@ VERSION_CODE_MARKER = re.compile(r"<!-- nuvio-fork-version-code:([0-9]+) -->")
 
 
 def release_channel(tag: str) -> str:
-    if not re.fullmatch(r"v?[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|beta|rc)\.[0-9]+)?", tag):
-        raise ValueError(f"Invalid upstream release tag: {tag}")
+    if not re.fullmatch(
+        r"v?[0-9]+\.[0-9]+\.[0-9]+"
+        r"(?:-(?:(?:alpha|beta|rc)\.[0-9]+(?:\.fork\.[1-9][0-9]*)?|fork\.[1-9][0-9]*))?",
+        tag,
+    ):
+        raise ValueError(f"Invalid release tag: {tag}")
     return "true" if is_github_prerelease(tag) else "false"
 
 
