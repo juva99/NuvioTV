@@ -36,7 +36,6 @@ sealed interface NtfyApprovalOutcome {
     data object NotConfigured : NtfyApprovalOutcome
     data object Busy : NtfyApprovalOutcome
     data object Failed : NtfyApprovalOutcome
-    data class RateLimited(val retryAfterSeconds: Int) : NtfyApprovalOutcome
 }
 
 @Singleton
@@ -48,17 +47,12 @@ class NtfyProfileApprovalService @Inject constructor(
 ) {
     private val requestLock = Any()
     private var activeRequest: ActiveRequest? = null
-    private val retryGate = NtfyApprovalRetryGate()
 
     suspend fun requestUnlock(profileId: Int, profileName: String): NtfyApprovalOutcome {
         val accountId = authManager.currentUserId ?: return NtfyApprovalOutcome.Failed
         val job = currentCoroutineContext()[Job]
         val request = synchronized(requestLock) {
             if (activeRequest != null) return NtfyApprovalOutcome.Busy
-            val retryAfterMs = retryGate.checkAndRecord(profileId, android.os.SystemClock.elapsedRealtime())
-            if (retryAfterMs > 0L) {
-                return NtfyApprovalOutcome.RateLimited(((retryAfterMs + 999L) / 1_000L).toInt())
-            }
             ActiveRequest(job).also { activeRequest = it }
         }
         return try {

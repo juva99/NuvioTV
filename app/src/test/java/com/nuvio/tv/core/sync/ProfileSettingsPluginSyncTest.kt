@@ -9,6 +9,8 @@ import com.nuvio.tv.TestPreferencesStore
 import com.nuvio.tv.core.auth.AuthManager
 import com.nuvio.tv.core.profile.ProfileManager
 import com.nuvio.tv.core.profileapproval.PhoneApprovalPairingAction
+import com.nuvio.tv.core.profileapproval.NtfyApprovalOutcome
+import com.nuvio.tv.core.profileapproval.NtfyProfileApprovalService
 import com.nuvio.tv.data.local.PROFILE_APPROVAL_FEATURE
 import com.nuvio.tv.data.local.ProfileApprovalPairingDataStore
 import com.nuvio.tv.data.local.PluginDataStore
@@ -33,7 +35,10 @@ import io.mockk.unmockkStatic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
@@ -41,6 +46,7 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -408,6 +414,101 @@ class ProfileSettingsPluginSyncTest {
     fun `profile selection loads inactive profile pairing without switching profiles`() = runTest(dispatcher) {
         val topic = "nuvio-" + "a".repeat(48)
         val harness = harness(authenticated = true, remote = mutableMapOf(2 to settingsWithApprovalTopic(topic)))
+        val viewModel = profileSelectionViewModel(harness)
+        try {
+            runCurrent()
+            assertEquals(topic, viewModel.profileApprovalPairings.value[2])
+            assertEquals(1, viewModel.activeProfileId.value)
+            assertTrue(harness.pushes.isEmpty())
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `opening an unlock starts approval and reopening sends a new request`() = runTest(dispatcher) {
+        val requests = mutableListOf<Int>()
+        val approval = mockk<NtfyProfileApprovalService>(relaxed = true)
+        coEvery { approval.requestUnlock(any(), any()) } coAnswers {
+            requests += firstArg<Int>()
+            try {
+                awaitCancellation()
+            } finally {
+                withContext(NonCancellable) { delay(100) }
+            }
+        }
+        val viewModel = profileSelectionViewModel(harness(authenticated = true), approval)
+        var approved = false
+        try {
+            runCurrent()
+            assertTrue(requests.isEmpty())
+            viewModel.beginProfileUnlock(2) { approved = true }
+            runCurrent()
+            assertEquals(listOf(2), requests)
+            assertEquals(2, viewModel.phoneApprovalState.value?.profileId)
+
+            viewModel.requestPhoneApproval(2) { approved = true }
+            runCurrent()
+            assertEquals(listOf(2), requests)
+
+            viewModel.cancelPhoneApproval()
+            viewModel.beginProfileUnlock(2) { approved = true }
+            runCurrent()
+            assertEquals(listOf(2), requests)
+            advanceTimeBy(100)
+            runCurrent()
+            assertEquals(listOf(2, 2), requests)
+            assertFalse(approved)
+
+            viewModel.cancelPhoneApproval()
+            advanceTimeBy(100)
+            runCurrent()
+            assertEquals(null, viewModel.phoneApprovalState.value)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `automatic approval unlocks only after an affirmative outcome`() = runTest(dispatcher) {
+        val approval = mockk<NtfyProfileApprovalService>(relaxed = true)
+        coEvery { approval.requestUnlock(2, any()) } returns NtfyApprovalOutcome.Approved
+        val viewModel = profileSelectionViewModel(harness(authenticated = true), approval)
+        var approvals = 0
+        try {
+            runCurrent()
+            viewModel.beginProfileUnlock(2) { approvals++ }
+            runCurrent()
+            assertEquals(1, approvals)
+            assertEquals(null, viewModel.phoneApprovalState.value)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    @Test
+    fun `revoked pairing is reported without unlocking`() = runTest(dispatcher) {
+        val approval = mockk<NtfyProfileApprovalService>(relaxed = true)
+        coEvery { approval.requestUnlock(2, any()) } returns NtfyApprovalOutcome.NotConfigured
+        val viewModel = profileSelectionViewModel(harness(authenticated = true), approval)
+        var approved = false
+        try {
+            runCurrent()
+            viewModel.beginProfileUnlock(2) { approved = true }
+            runCurrent()
+            assertFalse(approved)
+            assertEquals(NtfyApprovalOutcome.NotConfigured, viewModel.phoneApprovalState.value?.outcome)
+            viewModel.clearPhoneApprovalState()
+            assertEquals(null, viewModel.phoneApprovalState.value)
+        } finally {
+            viewModel.viewModelScope.cancel()
+        }
+    }
+
+    private fun profileSelectionViewModel(
+        harness: Harness,
+        approval: NtfyProfileApprovalService = mockk(relaxed = true)
+    ): ProfileSelectionViewModel {
         val profileSync = mockk<ProfileSyncService> {
             coEvery { pullProfileLockStates() } returns Result.success(emptyMap())
         }
@@ -423,18 +524,10 @@ class ProfileSettingsPluginSyncTest {
         val themes = mockk<ThemeDataStore> {
             every { observeThemeForProfile(any()) } returns flowOf(null)
         }
-        val viewModel = ProfileSelectionViewModel(
+        return ProfileSelectionViewModel(
             harness.profileManager, profileSync, harness.service, mockk(relaxed = true),
-            backgrounds, members, locks, harness.pairingStore, mockk(relaxed = true), themes
+            backgrounds, members, locks, harness.pairingStore, approval, themes
         )
-        try {
-            runCurrent()
-            assertEquals(topic, viewModel.profileApprovalPairings.value[2])
-            assertEquals(1, viewModel.activeProfileId.value)
-            assertTrue(harness.pushes.isEmpty())
-        } finally {
-            viewModel.viewModelScope.cancel()
-        }
     }
 
     private fun harness(

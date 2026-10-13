@@ -125,12 +125,19 @@ class NtfyProfileApprovalPolicyTest {
     }
 
     @Test
-    fun `retry gate applies cooldown after cancellation or timeout`() {
-        val gate = NtfyApprovalRetryGate(cooldownMs = 5_000L)
+    fun `pairing QR opens the native subscription on the notification server`() {
+        val topic = NtfyProfileApprovalPolicy.generateProfileTopic()
+        assertEquals(
+            "ntfy://ntfy.sh/$topic",
+            NtfyProfileApprovalPolicy.topicSubscriptionUrl(topic)
+        )
+    }
 
-        assertEquals(0L, gate.checkAndRecord(profileId = 2, nowMs = 100L))
-        assertEquals(4_100L, gate.checkAndRecord(profileId = 2, nowMs = 1_000L))
-        assertEquals(0L, gate.checkAndRecord(profileId = 2, nowMs = 5_100L))
+    @Test(expected = IllegalArgumentException::class)
+    fun `subscription links reject topics containing URL parameters`() {
+        NtfyProfileApprovalPolicy.topicSubscriptionUrl(
+            NtfyProfileApprovalPolicy.generateProfileTopic() + "?secure=false"
+        )
     }
 
     private fun notification(

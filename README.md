@@ -31,9 +31,15 @@ Nuvio TV is built with Kotlin, Jetpack Compose, TV Material 3, and Media3. Devel
 
 In **Settings → Profiles → Manage Profiles**, open a profile's options and choose
 **Phone approval**. After the profile PIN check (when enabled), scan the QR code
-with the phone camera and subscribe to the topic in ntfy or its web/PWA app.
-Selecting **Approve with phone** on the TV sends a two-minute unlock request
-with **Yes** and **No** actions; the normal PIN unlock always remains available.
+with the phone camera on phones supporting ntfy subscription links.
+The official App Store iOS app does not yet support these links: open ntfy,
+tap **+**, and manually add the displayed topic on `https://ntfy.sh`. Allow
+notifications; opening the ntfy website does not subscribe the native iOS app.
+Every time a paired locked profile's PIN screen opens, the TV automatically
+sends a two-minute unlock request with **Yes** and **No** actions. Reopening
+the screen sends a fresh request, even immediately after cancellation.
+**Resend phone request** retries without leaving the screen; the normal PIN
+unlock always remains available.
 The topic is a random bearer capability shared by the same authenticated account
 and profile across TVs. It is stored in the existing authenticated Supabase
 profile-settings blob, so equal numeric profile IDs in different accounts do not
@@ -55,10 +61,12 @@ preserve the latest remote pairing rather than a cached topic. Initial setup and
 pairing changes are read back for confirmation, but the settings RPCs have no
 compare-and-swap: simultaneous setup or settings writes can still race and may
 require retrying. Atomic pairing updates require server support.
-The QR URL is intended for ntfy subscription in a phone app or web/PWA.
-HTTP actions are POST-only (no Safari GET approvals). An iOS proof of concept
-has been reported, but native iOS behavior has not been device-verified and is
-not asserted as compatible.
+The QR encodes `ntfy://ntfy.sh/<topic>`, not the website URL. This is supported
+by Android; iOS deep-link support is still pending in
+[binwiederhier/ntfy-ios#51](https://github.com/binwiederhier/ntfy-ios/pull/51).
+The dialog also shows the server and topic for manual subscription.
+HTTP actions are POST-only (no Safari GET approvals). Native iOS push delivery
+and approval actions have not been device-verified.
 
 ## Minimal fork
 
@@ -88,13 +96,10 @@ player/updater/profile-approval tests, builds all five benchmark APKs, and check
 ID, version code, permanent signing certificate, and Dolby Vision native library.
 Fork releases use the upstream stable tag and are published as stable releases,
 so migrated apps can use the standard updater without a special subtitle-sync channel.
-For old installed apps, the workflow also publishes compatibility prereleases
-under every historical `v0.7.17`, `v0.8.4`, and `v0.9.0` subtitle-sync tag prefix,
-including prefixes whose releases were deleted but whose Git tags remain.
-Each contains the same newly signed universal APK, not the old sync algorithm.
-Its installed version uses the upstream version, so subsequent updates use
-the standard fork updater. These entries do not import upstream beta releases.
-Builds predating the in-app updater still require a manual APK update.
+Only the primary release is published; no new legacy subtitle-sync
+compatibility entries are created. Existing historical releases and tags remain
+untouched. Apps still using an old legacy-prefix updater need a manual update
+with the current universal APK; subsequent updates use the standard fork updater.
 
 Android version codes continue above the old fork builds (`2024` was the last
 legacy release). The release notes record `nuvio-upstream-release` and
@@ -103,9 +108,6 @@ upgrade-safe numbering. Do not remove these markers. Manual releases must also
 use an increasing version code; the release workflow checks it and records it.
 The existing `NUVIO_SUBTITLE_BETA_*` signing secrets keep their names and key to
 allow installed fork APKs to upgrade without uninstalling.
-Compatibility entries publish before the stable release. If publication fails
-partway through, the next run retries with a newer version code; compatibility
-notes never mark the upstream stable release as completed.
 
 `TMDB_API_KEY` is supplied through a GitHub Actions secret and read from the build
 environment (or `local.properties` for local builds). Release publication stops
@@ -122,7 +124,7 @@ To pause automation, disable **Follow Upstream Stable Releases** in Actions.
 It can also be run manually. The repository must allow Actions to create PRs.
 An explicitly requested manual release can publish a numbered upstream beta or
 release candidate through **Minimal Fork Release**, with the correct prerelease
-flag and the same legacy upgrade entries. This does not enable automatic beta
+flag, without legacy compatibility entries. This does not enable automatic beta
 tracking.
 For an explicitly requested fork-only update to an already published baseline,
 use a unique prerelease tag such as `1.1.0-beta.5.fork.1` (or `1.1.0-fork.1`

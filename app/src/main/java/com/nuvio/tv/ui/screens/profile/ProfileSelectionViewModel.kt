@@ -305,13 +305,20 @@ class ProfileSelectionViewModel @Inject constructor(
         }
     }
 
+    fun beginProfileUnlock(profileId: Int, onApproved: () -> Unit) {
+        cancelPhoneApproval()
+        requestPhoneApproval(profileId, onApproved)
+    }
+
     fun requestPhoneApproval(profileId: Int, onApproved: () -> Unit) {
         if (phoneApprovalJob?.isActive == true) return
         val profile = profiles.value.firstOrNull { it.id == profileId } ?: return
+        val previousRequest = phoneApprovalJob
         val generation = ++phoneApprovalGeneration
         phoneApprovalJob = viewModelScope.launch {
             _phoneApprovalState.value = PhoneApprovalState(profileId)
             try {
+                previousRequest?.join()
                 val outcome = ntfyProfileApprovalService.requestUnlock(profileId, profile.name)
                 coroutineContext.ensureActive()
                 if (generation != phoneApprovalGeneration) return@launch
@@ -335,7 +342,6 @@ class ProfileSelectionViewModel @Inject constructor(
         phoneApprovalGeneration++
         ntfyProfileApprovalService.cancelActiveRequest()
         phoneApprovalJob?.cancel()
-        phoneApprovalJob = null
         _phoneApprovalState.value = null
     }
 

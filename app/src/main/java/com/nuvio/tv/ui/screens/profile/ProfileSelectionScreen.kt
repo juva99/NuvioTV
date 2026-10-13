@@ -33,6 +33,8 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -260,6 +262,7 @@ fun ProfileSelectionScreen(
     var profileActionMessage by remember { mutableStateOf<String?>(null) }
 
     val lifecycleOwner = LocalLifecycleOwner.current
+    val lifecycleState by lifecycleOwner.lifecycle.currentStateFlow.collectAsState()
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) {
@@ -303,10 +306,7 @@ fun ProfileSelectionScreen(
         val message = when (val outcome = phoneApprovalState?.outcome) {
             NtfyApprovalOutcome.Denied -> context.getString(R.string.profile_phone_approval_denied)
             NtfyApprovalOutcome.TimedOut -> context.getString(R.string.profile_phone_approval_timeout)
-            is NtfyApprovalOutcome.RateLimited -> context.getString(
-                R.string.profile_phone_approval_rate_limited, outcome.retryAfterSeconds
-            )
-            NtfyApprovalOutcome.NotConfigured,
+            NtfyApprovalOutcome.NotConfigured -> context.getString(R.string.profile_phone_pairing_not_enabled)
             NtfyApprovalOutcome.Busy,
             NtfyApprovalOutcome.Failed -> context.getString(R.string.profile_phone_approval_error)
             NtfyApprovalOutcome.Approved, null -> null
@@ -319,7 +319,7 @@ fun ProfileSelectionScreen(
 
     val onProfileFocusedChange = remember(onProfileFocusChanged, onProfileThemeFocused) {
         { profile: UserProfile? ->
-            if (focusedProfileId != profile?.id) {
+            if (pinOverlayState == null && focusedProfileId != profile?.id) {
                 viewModel.cancelPhoneApproval()
             }
             focusedProfileId = profile?.id
@@ -347,6 +347,26 @@ fun ProfileSelectionScreen(
             )
         }
     }
+    val unlockProfile = (pinOverlayState as? ProfilePinOverlayState.Unlock)?.profile
+    val unlockPhoneApprovalAvailable = unlockProfile?.let { it.id in profileApprovalPairings } == true
+    LaunchedEffect(
+        unlockProfile?.id,
+        unlockPhoneApprovalAvailable,
+        lifecycleState.isAtLeast(Lifecycle.State.STARTED)
+    ) {
+        if (unlockProfile != null && unlockPhoneApprovalAvailable &&
+            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        ) {
+            viewModel.beginProfileUnlock(unlockProfile.id) {
+                pinOverlayState = null
+                pinOverlayError = null
+                selectProfile(unlockProfile.id)
+            }
+        } else {
+            viewModel.cancelPhoneApproval()
+        }
+    }
+
     val isManagementMode = screenMode == ProfileSelectionMode.Management
     val screenTitle = if (isManagementMode) {
         stringResource(R.string.profile_manage_title)
@@ -2571,7 +2591,7 @@ private fun ProfileApprovalPairingDialog(
     onRegenerate: () -> Unit,
     onDisable: () -> Unit
 ) {
-    val topicUrl = topic?.let(NtfyProfileApprovalPolicy::topicWebUrl)
+    val topicUrl = topic?.let(NtfyProfileApprovalPolicy::topicSubscriptionUrl)
     val qrBitmap = remember(topicUrl) {
         topicUrl?.let { url ->
             runCatching { QrCodeGenerator.generate(url, 420, margin = 1) }.getOrNull()
@@ -2584,86 +2604,95 @@ private fun ProfileApprovalPairingDialog(
         subtitle = stringResource(R.string.profile_phone_pairing_subtitle),
         width = 520.dp
     ) {
-        if (topic == null || topicUrl == null) {
-            Text(
-                text = stringResource(R.string.profile_phone_pairing_not_enabled),
-                color = NuvioTheme.colors.TextSecondary,
-                fontSize = 16.sp
-            )
-            Button(
-                onClick = onEnable,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.colors(
-                    containerColor = NuvioTheme.colors.FocusBackground,
-                    contentColor = NuvioTheme.colors.TextPrimary
+        Column(
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md)
+        ) {
+            if (topic == null || topicUrl == null) {
+                Text(
+                    text = stringResource(R.string.profile_phone_pairing_not_enabled),
+                    color = NuvioTheme.colors.TextSecondary,
+                    fontSize = 16.sp
                 )
-            ) {
-                Text(stringResource(R.string.profile_phone_pairing_enable))
-            }
-        } else {
-            qrBitmap?.let { bitmap ->
-                Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = stringResource(R.string.profile_phone_pairing_qr_description),
-                    modifier = Modifier
-                        .size(300.dp)
-                        .align(Alignment.CenterHorizontally)
-                )
-            }
-            Text(
-                text = stringResource(R.string.profile_phone_pairing_scan),
-                modifier = Modifier.fillMaxWidth(),
-                color = NuvioTheme.colors.TextPrimary,
-                fontSize = 16.sp,
-                textAlign = TextAlign.Center
-            )
-            Text(
-                text = topicUrl,
-                modifier = Modifier.fillMaxWidth(),
-                color = NuvioTheme.colors.TextTertiary,
-                fontSize = 11.sp,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            Text(
-                text = stringResource(R.string.profile_phone_pairing_bearer_warning),
-                color = Color(0xFFFFC46B),
-                fontSize = 14.sp
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md)
-            ) {
                 Button(
-                    onClick = onRegenerate,
-                    modifier = Modifier.weight(1f),
+                    onClick = onEnable,
+                    modifier = Modifier.fillMaxWidth(),
                     colors = ButtonDefaults.colors(
-                        containerColor = NuvioTheme.colors.BackgroundCard,
+                        containerColor = NuvioTheme.colors.FocusBackground,
                         contentColor = NuvioTheme.colors.TextPrimary
                     )
                 ) {
-                    Text(stringResource(R.string.profile_phone_pairing_regenerate))
+                    Text(stringResource(R.string.profile_phone_pairing_enable))
                 }
-                Button(
-                    onClick = onDisable,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.colors(
-                        containerColor = Color(0xFF4A2323),
-                        contentColor = NuvioTheme.colors.TextPrimary
+            } else {
+                qrBitmap?.let { bitmap ->
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = stringResource(R.string.profile_phone_pairing_qr_description),
+                        modifier = Modifier
+                            .size(300.dp)
+                            .align(Alignment.CenterHorizontally)
                     )
+                }
+                Text(
+                    text = stringResource(R.string.profile_phone_pairing_scan),
+                    modifier = Modifier.fillMaxWidth(),
+                    color = NuvioTheme.colors.TextPrimary,
+                    fontSize = 16.sp,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = stringResource(
+                        R.string.profile_phone_pairing_manual_details,
+                        NtfyProfileApprovalPolicy.NTFY_BASE_URL,
+                        topic
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                    color = NuvioTheme.colors.TextTertiary,
+                    fontSize = 11.sp,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = stringResource(R.string.profile_phone_pairing_bearer_warning),
+                    color = Color(0xFFFFC46B),
+                    fontSize = 14.sp
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(NuvioTheme.spacing.md)
                 ) {
-                    Text(stringResource(R.string.profile_phone_pairing_disable))
+                    Button(
+                        onClick = onRegenerate,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.colors(
+                            containerColor = NuvioTheme.colors.BackgroundCard,
+                            contentColor = NuvioTheme.colors.TextPrimary
+                        )
+                    ) {
+                        Text(stringResource(R.string.profile_phone_pairing_regenerate))
+                    }
+                    Button(
+                        onClick = onDisable,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.colors(
+                            containerColor = Color(0xFF4A2323),
+                            contentColor = NuvioTheme.colors.TextPrimary
+                        )
+                    ) {
+                        Text(stringResource(R.string.profile_phone_pairing_disable))
+                    }
                 }
             }
-        }
 
-        if (!errorMessage.isNullOrBlank()) {
-            Text(
-                text = errorMessage,
-                color = Color(0xFFFF8E8E),
-                fontSize = 14.sp
-            )
+            if (!errorMessage.isNullOrBlank()) {
+                Text(
+                    text = errorMessage,
+                    color = Color(0xFFFF8E8E),
+                    fontSize = 14.sp
+                )
+            }
         }
     }
 }

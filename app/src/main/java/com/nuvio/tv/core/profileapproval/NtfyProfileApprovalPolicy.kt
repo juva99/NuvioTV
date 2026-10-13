@@ -20,7 +20,6 @@ enum class PhoneApprovalPairingAction {
 object NtfyProfileApprovalPolicy {
     const val NTFY_BASE_URL = "https://ntfy.sh"
     const val REQUEST_TIMEOUT_MS = 2 * 60 * 1_000L
-    const val RETRY_COOLDOWN_MS = 5_000L
     const val RESPONSE_PAYLOAD_PREFIX = "nuvio-profile-unlock-v1"
 
     private const val PROFILE_TOPIC_PREFIX = "nuvio-"
@@ -41,9 +40,9 @@ object NtfyProfileApprovalPolicy {
     fun isProfileTopic(topic: String): Boolean =
         topic.matches(Regex("""nuvio-[a-f0-9]{48}"""))
 
-    fun topicWebUrl(topic: String): String {
+    fun topicSubscriptionUrl(topic: String): String {
         require(isProfileTopic(topic)) { "Invalid ntfy profile topic" }
-        return "$NTFY_BASE_URL/$topic"
+        return "ntfy://${NTFY_BASE_URL.removePrefix("https://")}/$topic"
     }
 
     fun responseTopicUrl(topic: String): String {
@@ -128,21 +127,4 @@ object NtfyProfileApprovalPolicy {
 
     private val NtfyApprovalDecision.wireValue: String
         get() = if (this == NtfyApprovalDecision.YES) "yes" else "no"
-}
-
-internal class NtfyApprovalRetryGate(
-    private val cooldownMs: Long = NtfyProfileApprovalPolicy.RETRY_COOLDOWN_MS
-) {
-    private val lastStartedAtMs = mutableMapOf<Int, Long>()
-
-    @Synchronized
-    fun checkAndRecord(profileId: Int, nowMs: Long): Long {
-        val lastStarted = lastStartedAtMs[profileId]
-        if (lastStarted != null) {
-            val remaining = lastStarted + cooldownMs - nowMs
-            if (remaining > 0L) return remaining
-        }
-        lastStartedAtMs[profileId] = nowMs
-        return 0L
-    }
 }

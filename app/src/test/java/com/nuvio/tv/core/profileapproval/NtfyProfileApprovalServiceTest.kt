@@ -99,8 +99,8 @@ class NtfyProfileApprovalServiceTest {
 
         assertTrue(result.isCancelled)
         assertTrue(streamCancelled.await(5, TimeUnit.SECONDS))
-        coEvery { settings.revalidatePhoneApprovalPairing(2) } returns Result.success(null)
-        assertEquals(NtfyApprovalOutcome.NotConfigured, service.requestUnlock(2, "Other"))
+        coEvery { settings.revalidatePhoneApprovalPairing(1) } returns Result.success(null)
+        assertEquals(NtfyApprovalOutcome.NotConfigured, service.requestUnlock(1, "Primary"))
     }
 
     @Test
@@ -112,8 +112,10 @@ class NtfyProfileApprovalServiceTest {
     }
 
     @Test
-    fun `yes unlocks an unchanged pairing`() = runBlocking {
-        assertEquals(NtfyApprovalOutcome.Approved, respondWith("yes"))
+    fun `consecutive unlock attempts each publish without a cooldown`() = runBlocking {
+        repeat(2) {
+            assertEquals(NtfyApprovalOutcome.Approved, respondWith("yes"))
+        }
     }
 
     @Test

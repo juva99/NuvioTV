@@ -3082,10 +3082,11 @@
     <string name="profile_pin_lock_removed_for_profile">PIN lock removed for %1$s.</string>
     <string name="profile_phone_pairing">Phone approval</string>
     <string name="profile_phone_pairing_title">Phone approval for %1$s</string>
-    <string name="profile_phone_pairing_subtitle">Scan this QR code in ntfy to receive unlock requests on your phone.</string>
+    <string name="profile_phone_pairing_subtitle">Receive an unlock request whenever the PIN screen opens.</string>
     <string name="profile_phone_pairing_not_enabled">Phone approval is not enabled for this profile.</string>
     <string name="profile_phone_pairing_enable">Enable phone approval</string>
-    <string name="profile_phone_pairing_scan">Scan this URL with your phone, then subscribe to the topic in ntfy or its web app.</string>
+    <string name="profile_phone_pairing_scan">Scan to open ntfy on supported phones. On iPhone (App Store app), open ntfy, tap +, and add the topic below manually. Allow notifications.</string>
+    <string name="profile_phone_pairing_manual_details">Server: %1$s\nTopic: %2$s</string>
     <string name="profile_phone_pairing_qr_description">ntfy subscription QR code for this profile</string>
     <string name="profile_phone_pairing_bearer_warning">Anyone who has this QR code/topic can approve or deny unlock requests. Treat it like a secret.</string>
     <string name="profile_phone_pairing_regenerate">Regenerate QR</string>
@@ -3095,12 +3096,11 @@
     <string name="profile_phone_pairing_error">Could not update phone approval. Try again.</string>
     <string name="profile_phone_pairing_security_heading">Enter the current PIN for %1$s.</string>
     <string name="profile_phone_pairing_security_support">A PIN is required before changing phone approval settings.</string>
-    <string name="profile_phone_approval_use_phone">Approve with phone</string>
+    <string name="profile_phone_approval_use_phone">Resend phone request</string>
     <string name="profile_phone_approval_waiting">Waiting for phone…</string>
     <string name="profile_phone_approval_denied">Phone denied this unlock request.</string>
     <string name="profile_phone_approval_timeout">Phone approval timed out.</string>
     <string name="profile_phone_approval_error">Could not contact the phone approval service.</string>
-    <string name="profile_phone_approval_rate_limited">Try phone approval again in %1$ds.</string>
 
     <!-- Trakt: Related / comments / list items error fallbacks -->
     <string name="trakt_related_error_request_failed">Trakt related request failed</string>
