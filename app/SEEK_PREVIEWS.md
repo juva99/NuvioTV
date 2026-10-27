@@ -70,12 +70,20 @@ For diagnosis, `seekPreviewLocalBaseline=true` first downloads the supplied fixt
 platform retriever without the HTTP adapter. The file is deleted afterward. This
 distinguishes device/clip decoding limitations from range-reader failures.
 
-Initial emulator validation: the full debug APK and instrumentation APK build,
-and the app installs and launches on an Android TV API 36 x86_64 AVD. The reference
-trailer smoke test did **not** pass: the platform retriever returned no frame even
-for the local-file baseline. Actual thumbnail extraction and the player overlay
-therefore remain unvalidated on this image; physical-TV codec/performance testing
-is still required. Do not treat successful unit tests as native decoder validation.
+Emulator validation: the full debug APK and instrumentation APK build and run on
+an Android TV API 36 x86_64 AVD. Both extraction and production-player integration
+tests **pass** with `https://samplelib.com/lib/preview/mp4/sample-20s.mp4` (1080p,
+H.264 High profile, level 4.0, yuv420p). An earlier reference trailer returned no
+frame even for the local-file baseline; compatibility still depends on the clip.
+
+Opt in to the additional production-player test with `seekPreviewPlayer=true`.
+It hosts the real `PlayerScreen` with the supplied URL (without adding a production
+debug/deep-link entry point), enables previews temporarily, waits for playback and
+a healthy buffer, exercises preview/commit events, and captures both overlays to
+`cache/seek-preview-url-player.png` and `cache/seek-preview-url-seek-only.png` in
+the target app. It restores the previous opt-in afterward. The test drives the
+same runtime events as the D-pad handler, not actual remote key/focus behavior.
+Physical-TV codec, remote-input, and performance testing are still required.
 
 Before enabling by default or declaring production readiness, test on both a TV
 emulator and lower-powered physical TVs:
