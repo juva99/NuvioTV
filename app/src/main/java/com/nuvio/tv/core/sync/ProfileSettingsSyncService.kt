@@ -125,6 +125,7 @@ private val localOnlyPlayerProfileSettingsKeys = setOf(
     "enable_http2",
     "last_playback_diagnostics_json",
     "enable_buffer_logs",
+    "seek_previews_enabled",
     "resize_mode",
     "min_buffer_ms",
     "max_buffer_ms",

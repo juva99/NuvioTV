@@ -136,6 +136,13 @@ internal fun PlaybackPlayerInterfaceSection(
     val internalPlayer = settings.playerPreference != PlayerPreference.EXTERNAL
 
     SettingsToggleRow(
+        title = stringResource(R.string.playback_seek_previews),
+        subtitle = stringResource(R.string.playback_seek_previews_sub),
+        checked = settings.seekPreviewsEnabled,
+        onToggle = { onUpdate { setSeekPreviewsEnabled(!settings.seekPreviewsEnabled) } },
+        enabled = internalPlayer && android.os.Build.VERSION.SDK_INT >= 27
+    )
+    SettingsToggleRow(
         title = stringResource(R.string.playback_loading_overlay),
         subtitle = stringResource(R.string.playback_loading_overlay_sub),
         checked = settings.loadingOverlayEnabled,

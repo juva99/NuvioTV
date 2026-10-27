@@ -609,6 +609,7 @@ private fun PlayerRuntimeController.applySelectedStreamState(
     headers: Map<String, String>
 ) {
     val playbackRequest = PlayerMediaSourceFactory.normalizePlaybackRequest(url, headers)
+    invalidateSeekPreviews()
     currentStreamUrl = playbackRequest.url
     currentHeaders = playbackRequest.headers
     currentFilename = stream.behaviorHints?.filename ?: navigationArgs.filename

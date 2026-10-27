@@ -353,6 +353,8 @@ internal fun PlayerRuntimeController.observeSubtitleSettings() {
                 )
             }
 
+            seekPreviewsEnabled = settings.seekPreviewsEnabled
+            refreshSeekPreview()
             if (resolvedAudioAmplificationDb != currentState.audioAmplificationDb) {
                 applyAudioAmplification(resolvedAudioAmplificationDb)
             }

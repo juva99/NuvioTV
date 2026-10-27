@@ -226,6 +226,8 @@ private fun String.safeMpvTraceHost(): String {
 internal fun PlayerRuntimeController.pauseForLifecycle() {
     // Mark we're in background so onPlayerError can defer recovery to onResume.
     isInBackground = true
+    pendingPreviewSeekPosition = null
+    invalidateSeekPreviews()
 
     // Release the MediaSession so the system doesn't route media commands
     // (play/pause, audio focus) to this player while the app is in the background.

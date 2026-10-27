@@ -179,6 +179,9 @@ class PlayerViewModel @Inject constructor(
     val playbackTimeline: StateFlow<PlaybackTimelineState>
         get() = controller.playbackTimeline
 
+    internal val seekPreviewState
+        get() = controller.seekPreviewCoordinator.state
+
     val postPlayRecommendationUiState: StateFlow<PostPlayRecommendationUiState>
         get() = postPlayRecommendationController.uiState
 
