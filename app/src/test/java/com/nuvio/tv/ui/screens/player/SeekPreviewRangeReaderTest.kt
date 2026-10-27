@@ -103,6 +103,38 @@ class SeekPreviewRangeReaderTest {
     }
 
     @Test
+    fun `sample reads crossing cached window boundaries are filled completely`() {
+        MockWebServer().use { server ->
+            val first = "a".repeat(128 * 1024)
+            val last = "b".repeat(37)
+            val total = (first.length + last.length).toLong()
+            server.enqueue(response(first, total = total))
+            server.enqueue(response(last, start = first.length.toLong(), total = total))
+            server.start()
+            SeekPreviewRangeReader(client, server.url("/").toString(), emptyMap()).use { reader ->
+                assertEquals(total, reader.size())
+                val data = ByteArray(6)
+                assertEquals(6, reader.readAt(first.length - 2L, data, 0, data.size))
+                assertArrayEquals("aabbbb".toByteArray(), data)
+                assertEquals(2, server.requestCount)
+            }
+        }
+    }
+
+    @Test
+    fun `a read spanning several windows is short only at actual EOF`() {
+        MockWebServer().use { server ->
+            server.enqueue(response("abcd"))
+            server.start()
+            SeekPreviewRangeReader(client, server.url("/").toString(), emptyMap()).use { reader ->
+                val data = ByteArray(10)
+                assertEquals(4, reader.readAt(0, data, 0, data.size))
+                assertArrayEquals("abcd".toByteArray(), data.copyOf(4))
+            }
+        }
+    }
+
+    @Test
     fun `close aborts an in-flight HTTP call`() {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))

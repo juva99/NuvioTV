@@ -12,6 +12,8 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import java.io.IOException
 
 internal class SeekPreviewFrameExtractor {
     @Volatile private var reader: SeekPreviewRangeReader? = null
@@ -42,12 +44,19 @@ internal class SeekPreviewFrameExtractor {
         val input = SeekPreviewRangeReader(client, source.url, source.headers)
         reader = input
         if (version != cancellationVersion.get()) input.close()
+        val readFailure = AtomicReference<Exception?>()
+        fun <T> read(block: () -> T): T = try {
+            block()
+        } catch (e: Exception) {
+            readFailure.set(e)
+            throw e
+        }
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(object : MediaDataSource() {
-                override fun getSize(): Long = input.size()
+                override fun getSize(): Long = read { input.size() }
                 override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int =
-                    input.readAt(position, buffer, offset, size)
+                    read { input.readAt(position, buffer, offset, size) }
                 override fun close() = input.close()
             })
             retriever.getScaledFrameAtTime(
@@ -55,10 +64,15 @@ internal class SeekPreviewFrameExtractor {
                 MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
                 320,
                 180
-            )
+            ).also { frame ->
+                if (frame == null) readFailure.get()?.let { throw it }
+            }
         } catch (_: OutOfMemoryError) {
             // Some platform codecs allocate a full-resolution intermediate even for scaled output.
             null
+        } catch (e: RuntimeException) {
+            // MediaMetadataRetriever otherwise hides a failed read behind an opaque native status.
+            throw IOException("Platform seek-preview extraction failed", readFailure.get() ?: e)
         } finally {
             input.close()
             runCatching { retriever.release() }

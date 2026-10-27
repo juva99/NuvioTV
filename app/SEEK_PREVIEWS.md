@@ -59,6 +59,24 @@ existing regression tests.
 .\gradlew.bat :app:testFullDebugUnitTest --tests 'com.nuvio.tv.ui.screens.player.SeekPreview*Test'
 ```
 
+An opt-in `SeekPreviewFrameExtractorDeviceTest` exercises the real platform decoder
+and bounded reader on a device. Supply `seekPreviewUrl` as an instrumentation
+runner argument pointing to a legal, range-capable HTTP video. Without that
+argument (or below API 27) the smoke test is skipped, rather than depending on an
+external video service in the default test suite.
+
+For diagnosis, `seekPreviewLocalBaseline=true` first downloads the supplied fixture
+(up to 32 MiB by declared size) to a temporary app-cache file and checks the same
+platform retriever without the HTTP adapter. The file is deleted afterward. This
+distinguishes device/clip decoding limitations from range-reader failures.
+
+Initial emulator validation: the full debug APK and instrumentation APK build,
+and the app installs and launches on an Android TV API 36 x86_64 AVD. The reference
+trailer smoke test did **not** pass: the platform retriever returned no frame even
+for the local-file baseline. Actual thumbnail extraction and the player overlay
+therefore remain unvalidated on this image; physical-TV codec/performance testing
+is still required. Do not treat successful unit tests as native decoder validation.
+
 Before enabling by default or declaring production readiness, test on both a TV
 emulator and lower-powered physical TVs:
 

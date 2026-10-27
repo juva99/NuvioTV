@@ -38,12 +38,21 @@ internal class SeekPreviewRangeReader(
         }
         if (size == 0) return 0
         if (length >= 0L && position >= length) return -1
-        if (position < windowStart || position >= windowStart + window.size) loadWindow(position)
-        val index = (position - windowStart).toInt()
-        val count = minOf(size, window.size - index)
-        if (count <= 0) return -1
-        window.copyInto(buffer, offset, index, index + count)
-        return count
+        var copied = 0
+        var cursor = position
+        // Native extractors can request an entire compressed sample across window boundaries.
+        // A short read there may be interpreted as a truncated sample, not a request to retry.
+        while (copied < size && (length < 0L || cursor < length)) {
+            checkBudget()
+            if (cursor < windowStart || cursor >= windowStart + window.size) loadWindow(cursor)
+            val index = (cursor - windowStart).toInt()
+            val count = minOf(size - copied, window.size - index)
+            if (count <= 0) break
+            window.copyInto(buffer, offset + copied, index, index + count)
+            copied += count
+            cursor += count
+        }
+        return if (copied == 0) -1 else copied
     }
 
     private fun checkBudget(): Long {
