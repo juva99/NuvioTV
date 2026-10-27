@@ -174,6 +174,10 @@ class PlaybackSettingsViewModel @Inject constructor(
         playerSettingsDataStore.setOsdClockEnabled(enabled)
     }
 
+    suspend fun setSeekPreviewsEnabled(enabled: Boolean) {
+        playerSettingsDataStore.setSeekPreviewsEnabled(enabled)
+    }
+
     suspend fun setTransparentLetterbox(enabled: Boolean) {
         deviceLocalPlayerPreferences.setTransparentLetterbox(enabled)
     }
