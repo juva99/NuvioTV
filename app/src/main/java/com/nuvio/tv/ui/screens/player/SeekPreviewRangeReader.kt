@@ -9,13 +9,15 @@ import java.util.concurrent.TimeUnit
 
 /** A bounded random-access reader, not a downloader. Servers that ignore Range are rejected. */
 internal class SeekPreviewRangeReader(
-    private val client: OkHttpClient,
-    private val url: String,
+    client: OkHttpClient,
+    private var url: String,
     private val headers: Map<String, String>,
     private val maxBytes: Int = 6 * 1024 * 1024,
     private val timeoutMs: Long = 2_500L,
     private val nowMs: () -> Long = { System.nanoTime() / 1_000_000L }
 ) : Closeable {
+    // Automatic redirects may drain intermediate bodies outside our payload budget.
+    private val client = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
     private val startedMs = nowMs()
     @Volatile private var closed = false
     @Volatile private var activeCall: Call? = null
@@ -62,60 +64,73 @@ internal class SeekPreviewRangeReader(
     }
 
     private fun loadWindow(position: Long) {
-        val remainingMs = checkBudget()
+        checkBudget()
         val count = minOf(WINDOW_BYTES, maxBytes - bytesRead)
         if (count <= 0) throw IOException("Preview byte budget exceeded")
         val end = minOf(position + count - 1L, if (length > 0L) length - 1L else Long.MAX_VALUE)
-        val request = Request.Builder().url(url).apply {
+        var request = Request.Builder().url(url).apply {
             headers.forEach { (key, value) ->
                 if (!key.equals("Range", true) && !key.equals("Accept-Encoding", true)) header(key, value)
             }
             header("Range", "bytes=$position-$end")
             header("Accept-Encoding", "identity")
         }.build()
-        val call = client.newCall(request)
-        call.timeout().timeout(remainingMs, TimeUnit.MILLISECONDS)
-        activeCall = call
-        var fullyRead = false
-        try {
-            if (closed) throw IOException("Preview read cancelled")
-            val response = call.execute()
+        repeat(MAX_REDIRECTS + 1) {
+            val call = client.newCall(request)
+            call.timeout().timeout(checkBudget(), TimeUnit.MILLISECONDS)
+            activeCall = call
+            var fullyRead = false
             try {
-                checkBudget()
-                val range = response.header("Content-Range")?.let(CONTENT_RANGE::matchEntire)
-                val start = range?.groupValues?.get(1)?.toLongOrNull()
-                val last = range?.groupValues?.get(2)?.toLongOrNull()
-                val total = range?.groupValues?.get(3)?.toLongOrNull()
-                if (response.code != 206 || start != position || last == null || total == null ||
-                    last < position || last > end || total <= last || (length >= 0 && length != total) ||
-                    response.header("Content-Encoding")?.let { !it.equals("identity", true) } == true
-                ) throw IOException("Preview requires valid byte-range support")
-                length = total
-                val expected = (last - position + 1L).toInt()
-                val body = response.body ?: throw IOException("Empty preview response")
-                val data = ByteArray(expected)
-                val input = body.byteStream()
-                var copied = 0
-                while (copied < expected) {
+                if (closed) throw IOException("Preview read cancelled")
+                val response = call.execute()
+                try {
                     checkBudget()
-                    val read = input.read(data, copied, expected - copied)
-                    if (read < 0) throw IOException("Truncated preview response")
-                    copied += read
-                    bytesRead += read
+                    if (response.code in REDIRECT_CODES) {
+                        fullyRead = response.body?.contentLength() == 0L
+                        val next = response.header("Location")?.let { response.request.url.resolve(it) }
+                            ?: throw IOException("Invalid preview redirect")
+                        if (response.request.url.isHttps && !next.isHttps) throw IOException("Insecure preview redirect")
+                        // Retain this source's headers, including playback's cross-origin auth policy.
+                        request = request.newBuilder().url(next).build()
+                        return@repeat
+                    }
+                    val range = response.header("Content-Range")?.let(CONTENT_RANGE::matchEntire)
+                    val start = range?.groupValues?.get(1)?.toLongOrNull()
+                    val last = range?.groupValues?.get(2)?.toLongOrNull()
+                    val total = range?.groupValues?.get(3)?.toLongOrNull()
+                    if (response.code != 206 || start != position || last == null || total == null ||
+                        last < position || last > end || total <= last || (length >= 0 && length != total) ||
+                        response.header("Content-Encoding")?.let { !it.equals("identity", true) } == true
+                    ) throw IOException("Preview requires valid byte-range support")
+                    length = total
+                    val expected = (last - position + 1L).toInt()
+                    val body = response.body ?: throw IOException("Empty preview response")
+                    val data = ByteArray(expected)
+                    val input = body.byteStream()
+                    var copied = 0
+                    while (copied < expected) {
+                        checkBudget()
+                        val read = input.read(data, copied, expected - copied)
+                        if (read < 0) throw IOException("Truncated preview response")
+                        copied += read
+                        bytesRead += read
+                    }
+                    windowStart = position
+                    window = data
+                    url = response.request.url.toString()
+                    fullyRead = body.contentLength() == expected.toLong()
+                    return
+                } finally {
+                    // Cancel before close: never drain redirect, invalid, or oversized bodies.
+                    if (!fullyRead) call.cancel()
+                    response.close()
                 }
-                windowStart = position
-                window = data
-                fullyRead = body.contentLength() == expected.toLong()
             } finally {
-                // Reuse connections only for fully consumed, correctly sized responses. Otherwise
-                // cancel before closing rather than draining an oversized/ignored-Range body.
                 if (!fullyRead) call.cancel()
-                response.close()
+                activeCall = null
             }
-        } finally {
-            if (!fullyRead) call.cancel()
-            activeCall = null
         }
+        throw IOException("Too many preview redirects")
     }
 
     override fun close() {
@@ -125,6 +140,8 @@ internal class SeekPreviewRangeReader(
 
     companion object {
         private const val WINDOW_BYTES = 128 * 1024
+        private const val MAX_REDIRECTS = 5
+        private val REDIRECT_CODES = setOf(300, 301, 302, 303, 307, 308)
         private val CONTENT_RANGE = Regex("bytes (\\d+)-(\\d+)/(\\d+)")
     }
 }

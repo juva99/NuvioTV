@@ -23,7 +23,8 @@ of time. Those can be added as separate providers later.
 
 ## Playback safeguards
 
-- No native decoder/network client starts until an eligible seek is held for 180 ms.
+- No native decoder/network client starts until the current eligible seek gesture
+  is held for 180 ms; consecutive taps do not share the previous hold timer.
 - One process-wide background decoder thread, even across player instances.
 - One operation in flight; only the latest target is retained. No key-repeat queue.
 - Ten-second position buckets and an 8 MiB session LRU cache.
@@ -32,6 +33,10 @@ of time. Those can be added as separate providers later.
 - Each extraction's range reader has a 6 MiB payload budget and a 2.5-second
   deadline, with 1-second connection/read timeouts. Its 128 KiB read window bounds
   transient network memory. Cookies and request headers are preserved.
+- Redirects are handled explicitly (up to five hops) within the same deadline.
+  Non-empty redirect bodies are cancelled rather than drained, and source auth
+  headers survive cross-origin redirects as in playback. The resolved URL is reused
+  for later reads in that extraction. HTTPS downgrades fail closed.
 - Invalid/ignored ranges are rejected without downloading the whole response.
   Standard TLS verification is required; the playback client's separate TLS
   fallback is not used because it would escape the preview request budget.
@@ -64,11 +69,6 @@ and bounded reader on a device. Supply `seekPreviewUrl` as an instrumentation
 runner argument pointing to a legal, range-capable HTTP video. Without that
 argument (or below API 27) the smoke test is skipped, rather than depending on an
 external video service in the default test suite.
-
-For diagnosis, `seekPreviewLocalBaseline=true` first downloads the supplied fixture
-(up to 32 MiB by declared size) to a temporary app-cache file and checks the same
-platform retriever without the HTTP adapter. The file is deleted afterward. This
-distinguishes device/clip decoding limitations from range-reader failures.
 
 Emulator validation: the full debug APK and instrumentation APK build and run on
 an Android TV API 36 x86_64 AVD. Both extraction and production-player integration

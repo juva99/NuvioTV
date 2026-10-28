@@ -1,6 +1,11 @@
 package com.nuvio.tv.ui.screens.player
 
 import okhttp3.OkHttpClient
+import okhttp3.Call
+import okhttp3.EventListener
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
@@ -13,6 +18,7 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 class SeekPreviewRangeReaderTest {
     private val client = OkHttpClient()
@@ -42,6 +48,131 @@ class SeekPreviewRangeReaderTest {
                 assertEquals("identity", request.getHeader("Accept-Encoding"))
                 assertEquals("Bearer test", request.getHeader("Authorization"))
                 assertEquals("https://example.test/", request.getHeader("Referer"))
+            }
+        }
+    }
+
+    @Test
+    fun `redirect bodies are cancelled rather than drained outside the byte budget`() {
+        val transferred = AtomicLong()
+        val measuredClient = client.newBuilder().eventListener(object : EventListener() {
+            override fun responseBodyEnd(call: Call, byteCount: Long) {
+                transferred.addAndGet(byteCount)
+            }
+        }).build()
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/video")
+                .setBody("x".repeat(64 * 1024)))
+            server.enqueue(response("abcd"))
+            server.start()
+            SeekPreviewRangeReader(measuredClient, server.url("/redirect").toString(), emptyMap(), maxBytes = 4).use {
+                assertEquals(4, it.size())
+            }
+            assertTrue("Only the four video bytes should be consumed", transferred.get() <= 4L)
+            assertEquals(2, server.requestCount)
+            server.takeRequest(1, TimeUnit.SECONDS)
+            assertEquals("An unconsumed redirect body must not be drained to reuse its connection", 0,
+                server.takeRequest(1, TimeUnit.SECONDS)!!.sequenceNumber)
+        }
+    }
+
+    @Test
+    fun `empty redirect bodies can reuse the connection without spending the byte budget`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/video").setBody(""))
+            server.enqueue(response("abcd"))
+            server.start()
+            SeekPreviewRangeReader(client, server.url("/redirect").toString(), emptyMap(), maxBytes = 4).use {
+                assertEquals(4, it.size())
+            }
+            server.takeRequest(1, TimeUnit.SECONDS)
+            assertEquals(1, server.takeRequest(1, TimeUnit.SECONDS)!!.sequenceNumber)
+        }
+    }
+
+    @Test
+    fun `HTTPS redirects cannot downgrade source credentials to HTTP`() {
+        val redirectClient = client.newBuilder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(302).message("Found").header("Location", "http://example.test/video")
+                .body("".toResponseBody()).build()
+        }.build()
+        SeekPreviewRangeReader(redirectClient, "https://example.test/video", mapOf("Authorization" to "Bearer test")).use { reader ->
+            assertEquals("Insecure preview redirect", assertThrows(IOException::class.java) { reader.size() }.message)
+        }
+    }
+
+    @Test
+    fun `cross-origin redirects preserve current source auth without leaking previous source headers`() {
+        MockWebServer().use { origin ->
+            MockWebServer().use { target ->
+                origin.start()
+                target.start()
+                listOf("Bearer first", "Bearer second", null).forEach { auth ->
+                    origin.enqueue(MockResponse().setResponseCode(302).setHeader("Location", target.url("/video")))
+                    target.enqueue(response("abcd"))
+                    val headers = auth?.let { mapOf("Authorization" to it) }.orEmpty()
+                    SeekPreviewRangeReader(client, origin.url("/redirect").toString(), headers).use {
+                        assertEquals(4, it.size())
+                    }
+                    assertEquals(auth, origin.takeRequest(1, TimeUnit.SECONDS)!!.getHeader("Authorization"))
+                    val redirected = target.takeRequest(1, TimeUnit.SECONDS)!!
+                    assertEquals(auth, redirected.getHeader("Authorization"))
+                    assertEquals("bytes=0-131071", redirected.getHeader("Range"))
+                    assertEquals("identity", redirected.getHeader("Accept-Encoding"))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `later range reads reuse the resolved video URL instead of repeating redirects`() {
+        MockWebServer().use { origin ->
+            MockWebServer().use { target ->
+                origin.start()
+                target.start()
+                origin.enqueue(MockResponse().setResponseCode(302).setHeader("Location", target.url("/video")))
+                target.enqueue(response("abcd", total = 100))
+                target.enqueue(response("wxyz", start = 50, total = 100))
+                SeekPreviewRangeReader(client, origin.url("/redirect").toString(), mapOf("Authorization" to "Bearer test")).use { reader ->
+                    assertEquals(100, reader.size())
+                    assertEquals(4, reader.readAt(50, ByteArray(4), 0, 4))
+                }
+                assertEquals(1, origin.requestCount)
+                assertEquals(2, target.requestCount)
+                target.takeRequest(1, TimeUnit.SECONDS)
+                val nextRange = target.takeRequest(1, TimeUnit.SECONDS)!!
+                assertEquals("bytes=50-99", nextRange.getHeader("Range"))
+                assertEquals("Bearer test", nextRange.getHeader("Authorization"))
+            }
+        }
+    }
+
+    @Test
+    fun `redirect loops stop after five hops`() {
+        MockWebServer().use { server ->
+            repeat(7) { server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/loop")) }
+            server.start()
+            SeekPreviewRangeReader(client, server.url("/loop").toString(), emptyMap()).use { reader ->
+                assertThrows(IOException::class.java) { reader.size() }
+                assertEquals(6, server.requestCount)
+            }
+        }
+    }
+
+    @Test
+    fun `redirects share the same extraction deadline`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/video"))
+            server.enqueue(response("abcd"))
+            server.start()
+            var now = 0L
+            val slowClient = client.newBuilder().addNetworkInterceptor { chain ->
+                chain.proceed(chain.request()).also { now = 2_501L }
+            }.build()
+            SeekPreviewRangeReader(slowClient, server.url("/redirect").toString(), emptyMap(), nowMs = { now }).use { reader ->
+                assertThrows(IOException::class.java) { reader.size() }
+                assertEquals(1, server.requestCount)
             }
         }
     }

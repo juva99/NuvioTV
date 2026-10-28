@@ -44,6 +44,41 @@ class SeekPreviewCoordinatorTest {
     }
 
     @Test
+    fun `consecutive quick taps each require their own hold delay`() = runTest {
+        var calls = 0
+        val coordinator = coordinator { _, _ -> calls++; "frame" }
+        coordinator.update(source, 10_000, true)
+        runCurrent()
+        advanceTimeBy(100)
+        coordinator.update(source, null, true)
+        advanceTimeBy(50)
+        coordinator.update(source, 20_000, true)
+        advanceTimeBy(30)
+        runCurrent()
+        assertEquals(0, calls)
+        assertNull(coordinator.state.value.positionMs)
+        advanceTimeBy(149)
+        runCurrent()
+        assertEquals(0, calls)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(1, calls)
+    }
+
+    @Test
+    fun `expired released tap cannot reveal a later tap loading card immediately`() = runTest {
+        val coordinator = coordinator()
+        coordinator.update(source, 10_000, true)
+        runCurrent()
+        advanceTimeBy(100)
+        coordinator.update(source, null, true)
+        advanceTimeBy(100)
+        runCurrent()
+        coordinator.update(source, 20_000, true)
+        assertNull(coordinator.state.value.positionMs)
+    }
+
+    @Test
     fun `continuous hold samples latest target without overlapping or queuing`() = runTest {
         val calls = mutableListOf<Long>()
         val first = CompletableDeferred<String>()

@@ -37,7 +37,7 @@ internal class SeekPreviewCoordinator<T : Any>(
     private var revision = 0L
     private var worker: Job? = null
     private var closed = false
-    private var previewVisible = false
+    private var holdStartedMs = 0L
     private var failures = 0
     private var cooldownUntilMs = 0L
     private var nextExtractionMs = 0L
@@ -46,11 +46,11 @@ internal class SeekPreviewCoordinator<T : Any>(
 
     fun update(source: SeekPreviewSource?, positionMs: Long?, allowExtraction: Boolean) {
         if (closed) return
+        if (this.source != source || (targetMs == null && positionMs != null)) holdStartedMs = nowMs()
         if (this.source != source) {
             cancelRead()
             revision++
             this.source = source
-            previewVisible = false
             cache.clear()
             cachedBytes = 0
             failures = 0
@@ -62,7 +62,6 @@ internal class SeekPreviewCoordinator<T : Any>(
             if (allowed && !allowExtraction && positionMs != null) cooldownUntilMs = nowMs() + COOLDOWN_MS
         }
         targetMs = positionMs?.coerceAtLeast(0L)
-        if (targetMs == null) previewVisible = false
         allowed = allowExtraction
         publish()
         if (source != null && targetMs != null && worker == null && canExtract() &&
@@ -70,10 +69,6 @@ internal class SeekPreviewCoordinator<T : Any>(
         ) {
             worker = scope.launch {
                 try {
-                    // Quick taps should not open a second network reader/decoder.
-                    delay(INITIAL_DELAY_MS)
-                    previewVisible = true
-                    publish()
                     runWorker()
                 } finally {
                     worker = null
@@ -89,7 +84,7 @@ internal class SeekPreviewCoordinator<T : Any>(
         val frame = target?.let { cache[bucketMs(it)] }
         // Unsupported, unhealthy, or cooled-down sources retain the existing timestamp-only UI.
         _state.value = if (source == null || target == null ||
-            (frame == null && (!canExtract() || !previewVisible))
+            (frame == null && (!canExtract() || nowMs() - holdStartedMs < INITIAL_DELAY_MS))
         ) {
             SeekPreviewState()
         } else {
@@ -101,13 +96,15 @@ internal class SeekPreviewCoordinator<T : Any>(
         while (!closed && source != null && targetMs != null && canExtract()) {
             val bucket = bucketMs(targetMs!!)
             if (cache.containsKey(bucket)) return
-            val waitMs = nextExtractionMs - nowMs()
+            // A new gesture must not inherit a released gesture's timer or native work.
+            val waitMs = maxOf(nextExtractionMs, holdStartedMs + INITIAL_DELAY_MS) - nowMs()
             if (waitMs > 0) {
                 delay(waitMs)
                 continue // Re-read the latest position, never a queue of intermediate targets.
             }
             val requestSource = source!!
             val requestRevision = revision
+            publish()
             val startedMs = nowMs()
             val frame = try {
                 extract(requestSource, bucket)
