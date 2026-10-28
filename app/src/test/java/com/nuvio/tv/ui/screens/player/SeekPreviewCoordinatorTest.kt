@@ -30,7 +30,7 @@ class SeekPreviewCoordinatorTest {
     )
 
     @Test
-    fun `quick tap does not start extraction`() = runTest {
+    fun `cancelling an uncommitted input prevents extraction`() = runTest {
         var calls = 0
         val coordinator = coordinator { _, _ -> calls++; "frame" }
         coordinator.update(source, 15_000, true)
@@ -44,7 +44,7 @@ class SeekPreviewCoordinatorTest {
     }
 
     @Test
-    fun `consecutive quick taps each require their own hold delay`() = runTest {
+    fun `consecutive uncommitted inputs each get their own extraction delay`() = runTest {
         var calls = 0
         val coordinator = coordinator { _, _ -> calls++; "frame" }
         coordinator.update(source, 10_000, true)
@@ -56,7 +56,8 @@ class SeekPreviewCoordinatorTest {
         advanceTimeBy(30)
         runCurrent()
         assertEquals(0, calls)
-        assertNull(coordinator.state.value.positionMs)
+        assertEquals(20_000L, coordinator.state.value.positionMs)
+        assertTrue(coordinator.state.value.isLoading)
         advanceTimeBy(149)
         runCurrent()
         assertEquals(0, calls)
@@ -66,8 +67,9 @@ class SeekPreviewCoordinatorTest {
     }
 
     @Test
-    fun `expired released tap cannot reveal a later tap loading card immediately`() = runTest {
-        val coordinator = coordinator()
+    fun `new taps show loading immediately but still get their own extraction delay`() = runTest {
+        var calls = 0
+        val coordinator = coordinator { _, _ -> calls++; "frame" }
         coordinator.update(source, 10_000, true)
         runCurrent()
         advanceTimeBy(100)
@@ -75,6 +77,150 @@ class SeekPreviewCoordinatorTest {
         advanceTimeBy(100)
         runCurrent()
         coordinator.update(source, 20_000, true)
+        assertEquals(20_000L, coordinator.state.value.positionMs)
+        assertTrue(coordinator.state.value.isLoading)
+        advanceTimeBy(179)
+        runCurrent()
+        assertEquals(0, calls)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(1, calls)
+    }
+
+    @Test
+    fun `loading state identifies the source so UI cannot retain another source image`() = runTest {
+        val coordinator = coordinator()
+        coordinator.update(source, 10_000, true)
+        val previous = coordinator.state.value
+        coordinator.update(source.copy(generation = 2), 10_000, true)
+        assertEquals(1L, previous.sourceGeneration)
+        assertEquals(2L, coordinator.state.value.sourceGeneration)
+        assertTrue(previous != coordinator.state.value)
+    }
+
+    @Test
+    fun `quick tap can load a preview after commit and it expires automatically`() = runTest {
+        val coordinator = coordinator()
+        coordinator.update(source, 10_000, true)
+        runCurrent()
+        advanceTimeBy(50)
+        coordinator.commit()
+        coordinator.update(source, null, true)
+        assertEquals(10_000L, coordinator.state.value.positionMs)
+        advanceTimeBy(130)
+        runCurrent()
+        assertEquals("10000", coordinator.state.value.frame)
+        coordinator.update(source, null, true) // Periodic playback refresh must retain the committed target.
+        advanceTimeBy(SeekPreviewCoordinator.POST_COMMIT_PREVIEW_MS)
+        runCurrent()
+        assertNull(coordinator.state.value.positionMs)
+    }
+
+    @Test
+    fun `direct skips can request the same post-commit preview without a pending hold`() = runTest {
+        val coordinator = coordinator()
+        coordinator.update(source, null, true)
+        coordinator.commit(10_000)
+        coordinator.update(source, null, true)
+        advanceTimeBy(180)
+        runCurrent()
+        assertEquals("10000", coordinator.state.value.frame)
+    }
+
+    @Test
+    fun `new gesture cancels the previous expiry and gets a fresh hold timer`() = runTest {
+        var calls = 0
+        val coordinator = coordinator { _, _ -> calls++; "frame" }
+        coordinator.update(source, 10_000, true)
+        coordinator.commit()
+        coordinator.update(source, null, true)
+        advanceTimeBy(1_000)
+        runCurrent()
+        coordinator.update(source, 20_000, true)
+        runCurrent()
+        assertEquals(1, calls)
+        advanceTimeBy(179)
+        runCurrent()
+        assertEquals(1, calls)
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals(2, calls)
+        advanceTimeBy(SeekPreviewCoordinator.POST_COMMIT_PREVIEW_MS)
+        runCurrent()
+        assertEquals(20_000L, coordinator.state.value.positionMs)
+    }
+
+    @Test
+    fun `a held input at the same clamped position survives the old committed preview expiry`() = runTest {
+        val coordinator = coordinator()
+        coordinator.update(source, 0, true)
+        coordinator.commit()
+        coordinator.update(source, null, true)
+        advanceTimeBy(1_000)
+        runCurrent()
+        coordinator.update(source, 0, true)
+        advanceTimeBy(SeekPreviewCoordinator.POST_COMMIT_PREVIEW_MS)
+        runCurrent()
+        assertEquals(0L, coordinator.state.value.positionMs)
+        coordinator.commit()
+        coordinator.update(source, null, true)
+        advanceTimeBy(SeekPreviewCoordinator.POST_COMMIT_PREVIEW_MS)
+        runCurrent()
+        assertNull(coordinator.state.value.positionMs)
+    }
+
+    @Test
+    fun `expected post-seek buffering pauses extraction until playback has recovered`() = runTest {
+        var calls = 0
+        val coordinator = coordinator { _, _ -> calls++; "frame" }
+        coordinator.update(source, 10_000, true)
+        coordinator.commit()
+        coordinator.update(source, 10_000, false) // Seek callback may arrive before key-up clears the pending value.
+        coordinator.update(source, null, false)
+        advanceTimeBy(500)
+        runCurrent()
+        assertEquals(0, calls)
+        coordinator.update(source, null, true)
+        runCurrent()
+        assertEquals(1, calls)
+        assertEquals("frame", coordinator.state.value.frame)
+    }
+
+    @Test
+    fun `expiry cancels an unfinished committed preview and rejects a late frame`() = runTest {
+        val result = CompletableDeferred<String>()
+        var cancellations = 0
+        val coordinator = coordinator(cancelRead = { cancellations++ }) { _, _ -> result.await() }
+        coordinator.update(source, 10_000, true)
+        runCurrent()
+        advanceTimeBy(180)
+        runCurrent()
+        coordinator.commit()
+        coordinator.update(source, null, true)
+        val beforeExpiry = cancellations
+        advanceTimeBy(SeekPreviewCoordinator.POST_COMMIT_PREVIEW_MS)
+        runCurrent()
+        assertTrue(cancellations > beforeExpiry)
+        result.complete("late")
+        runCurrent()
+        assertNull(coordinator.state.value.positionMs)
+        assertNull(coordinator.state.value.frame)
+    }
+
+    @Test
+    fun `source changes and explicit dismissal clear the retained preview`() = runTest {
+        val coordinator = coordinator()
+        coordinator.update(source, 10_000, true)
+        coordinator.commit()
+        coordinator.update(source, null, true)
+        coordinator.update(source.copy(generation = 2), null, true)
+        assertNull(coordinator.state.value.positionMs)
+        coordinator.update(source, 10_000, true)
+        coordinator.commit()
+        coordinator.commit(null)
+        coordinator.update(source, null, true)
+        advanceTimeBy(500)
+        runCurrent()
         assertNull(coordinator.state.value.positionMs)
     }
 
@@ -95,7 +241,10 @@ class SeekPreviewCoordinatorTest {
         first.complete("old")
         runCurrent()
         assertNull(coordinator.state.value.frame)
-        advanceTimeBy(750)
+        advanceTimeBy(499)
+        runCurrent()
+        assertEquals(listOf(10_000L), calls)
+        advanceTimeBy(1)
         runCurrent()
         assertEquals(listOf(10_000L, 310_000L), calls)
         assertEquals("latest", coordinator.state.value.frame)
@@ -256,6 +405,7 @@ class SeekPreviewCoordinatorTest {
         val coordinator = coordinator { _, _ -> calls++; "frame" }
         coordinator.update(source, 10_000, true)
         runCurrent()
+        coordinator.commit()
         coordinator.close()
         coordinator.update(source, 20_000, true)
         advanceTimeBy(1_000)

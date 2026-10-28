@@ -6,7 +6,8 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -15,6 +16,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.size
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -33,11 +38,16 @@ import com.nuvio.tv.ui.components.LoadingIndicator
 internal fun SeekPreviewThumbnailHost(viewModel: PlayerViewModel, durationMs: Long) {
     val state by viewModel.seekPreviewState.collectAsState()
     val target = state.positionMs ?: return
-    val image = remember(state.frame) { state.frame?.asImageBitmap() }
+    var lastFrame by remember(viewModel, state.sourceGeneration) {
+        mutableStateOf<android.graphics.Bitmap?>(null)
+    }
+    SideEffect { if (state.frame != null) lastFrame = state.frame }
+    val frame = state.frame ?: lastFrame
+    val image = remember(frame) { frame?.asImageBitmap() }
     val timestamp = formatTime(target)
     val progress = if (durationMs > 0) (target.toDouble() / durationMs).coerceIn(0.0, 1.0) else 0.0
     BoxWithConstraints(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
-        val cardWidth = minOf(160.dp, maxWidth)
+        val cardWidth = minOf(240.dp, maxWidth)
         val x = ((maxWidth * progress.toFloat()) - cardWidth / 2).coerceIn(0.dp, maxWidth - cardWidth)
         Column(
             modifier = Modifier
@@ -47,17 +57,17 @@ internal fun SeekPreviewThumbnailHost(viewModel: PlayerViewModel, durationMs: Lo
                 .background(Color.Black.copy(alpha = 0.9f)),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Box(modifier = Modifier.fillMaxWidth().height(90.dp), contentAlignment = Alignment.Center) {
+            Box(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f), contentAlignment = Alignment.Center) {
                 if (image != null) {
                     Image(
                         bitmap = image,
-                        contentDescription = stringResource(R.string.cd_seek_preview, timestamp),
+                        contentDescription = if (state.isLoading) null else stringResource(R.string.cd_seek_preview, timestamp),
                         contentScale = ContentScale.Fit,
-                        modifier = Modifier.fillMaxWidth().height(90.dp)
+                        alpha = if (state.isLoading) 0.4f else 1f,
+                        modifier = Modifier.fillMaxSize()
                     )
-                } else {
-                    LoadingIndicator()
                 }
+                if (state.isLoading) LoadingIndicator(modifier = Modifier.size(28.dp))
             }
             Text(
                 text = timestamp,

@@ -17,7 +17,8 @@ internal data class SeekPreviewSource(
 internal data class SeekPreviewState<T>(
     val positionMs: Long? = null,
     val frame: T? = null,
-    val isLoading: Boolean = false
+    val isLoading: Boolean = false,
+    val sourceGeneration: Long = 0L
 )
 
 /** Main-thread coordinator. Native extraction is deliberately never cancelled/replaced by a key repeat. */
@@ -32,10 +33,13 @@ internal class SeekPreviewCoordinator<T : Any>(
     private val _state = MutableStateFlow(SeekPreviewState<T>())
     val state = _state.asStateFlow()
     private var source: SeekPreviewSource? = null
+    private var pendingPositionMs: Long? = null
     private var targetMs: Long? = null
     private var allowed = false
     private var revision = 0L
     private var worker: Job? = null
+    private var committedPositionMs: Long? = null
+    private var hideCommittedPreview: Job? = null
     private var closed = false
     private var holdStartedMs = 0L
     private var failures = 0
@@ -46,6 +50,17 @@ internal class SeekPreviewCoordinator<T : Any>(
 
     fun update(source: SeekPreviewSource?, positionMs: Long?, allowExtraction: Boolean) {
         if (closed) return
+        pendingPositionMs = positionMs
+        val newInput = positionMs != null && positionMs != committedPositionMs
+        if (newInput && committedPositionMs != null) holdStartedMs = nowMs()
+        if (this.source != source || newInput) {
+            committedPositionMs = null
+            hideCommittedPreview?.cancel()
+        }
+        updateTarget(source, positionMs ?: committedPositionMs, allowExtraction)
+    }
+
+    private fun updateTarget(source: SeekPreviewSource?, positionMs: Long?, allowExtraction: Boolean) {
         if (this.source != source || (targetMs == null && positionMs != null)) holdStartedMs = nowMs()
         if (this.source != source) {
             cancelRead()
@@ -59,7 +74,9 @@ internal class SeekPreviewCoordinator<T : Any>(
         if ((targetMs != null && positionMs == null) || (allowed && !allowExtraction)) {
             cancelRead()
             revision++
-            if (allowed && !allowExtraction && positionMs != null) cooldownUntilMs = nowMs() + COOLDOWN_MS
+            if (allowed && !allowExtraction && positionMs != null && committedPositionMs == null) {
+                cooldownUntilMs = nowMs() + COOLDOWN_MS
+            }
         }
         targetMs = positionMs?.coerceAtLeast(0L)
         allowed = allowExtraction
@@ -84,11 +101,11 @@ internal class SeekPreviewCoordinator<T : Any>(
         val frame = target?.let { cache[bucketMs(it)] }
         // Unsupported, unhealthy, or cooled-down sources retain the existing timestamp-only UI.
         _state.value = if (source == null || target == null ||
-            (frame == null && (!canExtract() || nowMs() - holdStartedMs < INITIAL_DELAY_MS))
+            (frame == null && !canExtract())
         ) {
             SeekPreviewState()
         } else {
-            SeekPreviewState(target, frame, frame == null)
+            SeekPreviewState(target, frame, frame == null, source?.generation ?: 0L)
         }
     }
 
@@ -140,8 +157,23 @@ internal class SeekPreviewCoordinator<T : Any>(
         return true
     }
 
+    fun commit(positionMs: Long? = targetMs) {
+        if (closed || (positionMs != null && source == null)) return
+        if (positionMs != null && (targetMs == null || committedPositionMs != null)) holdStartedMs = nowMs()
+        committedPositionMs = positionMs
+        hideCommittedPreview?.cancel()
+        updateTarget(source, positionMs, allowed)
+        if (positionMs == null) return
+        hideCommittedPreview = scope.launch {
+            delay(POST_COMMIT_PREVIEW_MS)
+            committedPositionMs = null
+            updateTarget(source, pendingPositionMs, allowed)
+        }
+    }
+
     fun close() {
         closed = true
+        hideCommittedPreview?.cancel()
         cancelRead()
         revision++
         cache.clear()
@@ -152,7 +184,8 @@ internal class SeekPreviewCoordinator<T : Any>(
 
     companion object {
         const val INITIAL_DELAY_MS = 180L
-        const val EXTRACTION_INTERVAL_MS = 750L
+        const val EXTRACTION_INTERVAL_MS = 500L
+        const val POST_COMMIT_PREVIEW_MS = 3_000L
         const val SLOW_EXTRACTION_MS = 1_500L
         const val COOLDOWN_MS = 15_000L
         const val MAX_FAILURES = 3

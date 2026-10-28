@@ -1,8 +1,10 @@
 # Experimental seek previews
 
 Enable **Settings → Playback → Player Interface → Seek previews (experimental)**,
-then hold left/right on the seek bar or while the player controls are hidden.
-Releasing the direction key commits the seek exactly as before.
+then tap left/right for the normal 10-second skip, or hold to scrub faster, with
+controls visible or hidden. The seek still commits immediately on release; it
+does not wait for a thumbnail. The preview stays available for up to three seconds
+after a skip, so a held key is not required to see it.
 
 The thumbnail represents an approximate nearby keyframe. The label is the selected
 seek time, not a claimed exact timestamp of the extracted frame.
@@ -23,13 +25,14 @@ of time. Those can be added as separate providers later.
 
 ## Playback safeguards
 
-- No native decoder/network client starts until the current eligible seek gesture
-  is held for 180 ms; consecutive taps do not share the previous hold timer.
+- The card responds immediately. Uncached extraction waits 180 ms to coalesce
+  inputs, then may finish after a quick tap has committed. Cached frames are instant.
 - One process-wide background decoder thread, even across player instances.
 - One operation in flight; only the latest target is retained. No key-repeat queue.
 - Ten-second position buckets and an 8 MiB session LRU cache.
-- 320 × 180 maximum requested output, nearest sync frame, no exact-frame decoding.
-- At least 750 ms between completed extractions and subsequent uncached requests.
+- A 240 dp-wide card keeps the last image dimmed while the next image loads.
+  Decoder output remains 320 × 180, nearest sync frame, with no exact-frame decoding.
+- At least 500 ms between completed extractions and subsequent uncached requests.
 - Each extraction's range reader has a 6 MiB payload budget and a 2.5-second
   deadline, with 1-second connection/read timeouts. Its 128 KiB read window bounds
   transient network memory. Cookies and request headers are preserved.
@@ -45,8 +48,10 @@ of time. Those can be added as separate providers later.
 - Buffer pressure aborts network reads and imposes a 15-second cooldown. Failed
   or slower-than-1.5-second extractions also cool down; three such results disable
   further extraction for that source session. Cache hits remain available.
-- Commit, backgrounding, player release, source changes, and disabling the feature
-  abort reads. Session/revision checks reject late results.
+  Expected buffering after a committed skip pauses reads until the buffer recovers,
+  without adding that cooldown; the three-second preview window still applies.
+- Preview expiry, backgrounding, player release, source changes, and disabling the
+  feature abort reads. Session/revision checks reject late results.
 
 **Limits:** coroutine cancellation cannot forcibly stop a native decoder. The
 network deadline bounds reads, not native CPU/codec execution. A blocked native
@@ -79,7 +84,8 @@ frame even for the local-file baseline; compatibility still depends on the clip.
 Opt in to the additional production-player test with `seekPreviewPlayer=true`.
 It hosts the real `PlayerScreen` with the supplied URL (without adding a production
 debug/deep-link entry point), enables previews temporarily, waits for playback and
-a healthy buffer, exercises preview/commit events, and captures both overlays to
+a healthy buffer, verifies immediate 10-second forward/backward skips and
+post-commit previews, and captures both overlays to
 `cache/seek-preview-url-player.png` and `cache/seek-preview-url-seek-only.png` in
 the target app. It restores the previous opt-in afterward. The test drives the
 same runtime events as the D-pad handler, not actual remote key/focus behavior.
@@ -89,7 +95,8 @@ Before enabling by default or declaring production readiness, test on both a TV
 emulator and lower-powered physical TVs:
 
 1. Enable the setting, play a seekable HTTP MP4/MKV, wait for a healthy buffer.
-2. Verify quick taps don't fetch previews and long holds do, in both overlays.
+2. Verify a tap skips immediately and can show a preview afterward; check long holds
+   and automatic preview expiry in both overlays.
 3. Reverse direction rapidly; verify no stale image is labelled as the new target.
 4. Release the key, switch sources/episodes, background the app, and exit during
    extraction. Verify reads stop and old images don't reappear.

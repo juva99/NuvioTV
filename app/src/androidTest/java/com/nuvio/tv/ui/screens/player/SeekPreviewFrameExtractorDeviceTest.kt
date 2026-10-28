@@ -30,7 +30,7 @@ import com.nuvio.tv.ui.theme.NuvioTheme
 @RunWith(AndroidJUnit4::class)
 class SeekPreviewFrameExtractorDeviceTest {
     @Test
-    fun playsUrlAndDisplaysPreviewInProductionPlayer() = runBlocking {
+    fun playsUrlAndDisplaysPreviewInProductionPlayer(): Unit = runBlocking {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
         val arguments = InstrumentationRegistry.getArguments()
         val url = arguments.getString("seekPreviewUrl")
@@ -65,7 +65,11 @@ class SeekPreviewFrameExtractorDeviceTest {
                     // Pause to stabilize the screenshot, then exercise the same preview event as
                     // the D-pad handler. Remote focus/key-repeat behavior is a separate manual check.
                     viewModel.onEvent(PlayerEvent.OnPlayPause)
-                    viewModel.onEvent(PlayerEvent.OnPreviewSeekBy(8_000L))
+                    viewModel.onEvent(PlayerEvent.OnPreviewSeekBy(PlayerScrubRates.STEP_SHORT_MS))
+                    val target = viewModel.uiState.value.pendingPreviewSeekPosition!!
+                    viewModel.onEvent(PlayerEvent.OnCommitPreviewSeek)
+                    assertTrue("A single tap must commit immediately", viewModel.uiState.value.pendingPreviewSeekPosition == null)
+                    assertTrue("The seek must not wait for the thumbnail", kotlin.math.abs(viewModel.exoPlayer!!.currentPosition - target) < 500L)
                 }
                 val preview = withTimeout(10_000L) { viewModel.seekPreviewState.first { it.frame != null } }
                 assertNotNull(preview.positionMs)
@@ -91,19 +95,15 @@ class SeekPreviewFrameExtractorDeviceTest {
                 capture("seek-preview-url-player.png")
                 withContext(Dispatchers.Main) {
                     viewModel.hideControls()
-                    viewModel.onEvent(PlayerEvent.OnPreviewSeekBy(4_000L))
+                    viewModel.onEvent(PlayerEvent.OnSeekBy(-PlayerScrubRates.STEP_SHORT_MS))
+                    assertTrue("Direct skips must not require a held key", viewModel.uiState.value.pendingPreviewSeekPosition == null)
                 }
                 withTimeout(10_000L) {
                     viewModel.seekPreviewState.first { it.frame != null && it.positionMs != preview.positionMs }
                 }
-                withContext(Dispatchers.Main) {
-                    // Refresh the normal seek-overlay timeout after decoding the second frame.
-                    viewModel.onEvent(PlayerEvent.OnPreviewSeekBy(0L))
-                }
                 capture("seek-preview-url-seek-only.png")
-                withContext(Dispatchers.Main) {
-                    viewModel.onEvent(PlayerEvent.OnCommitPreviewSeek)
-                    assertTrue("Commit must clear the pending preview", viewModel.uiState.value.pendingPreviewSeekPosition == null)
+                withTimeout(SeekPreviewCoordinator.POST_COMMIT_PREVIEW_MS + 1_000L) {
+                    viewModel.seekPreviewState.first { it.positionMs == null }
                 }
             } finally {
                 withContext(Dispatchers.Main) { viewModel.stopAndRelease() }
