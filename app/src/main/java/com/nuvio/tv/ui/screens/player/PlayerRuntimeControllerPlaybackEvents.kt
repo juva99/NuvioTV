@@ -1241,8 +1241,10 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
             } else {
                 SeekParameters.NEXT_SYNC
             }
+            seekPreviewCoordinator.commit(target)
             seekPlaybackTo(target, seekParameters)
             updatePlaybackTimeline(currentPosition = target)
+            refreshSeekPreview()
             scheduleProgressSyncAfterSeek()
             if (_uiState.value.showControls) {
                 showControlsTemporarily()
@@ -1269,6 +1271,7 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
             if (_playbackTimeline.value.isLive) return
             val target = pendingPreviewSeekPosition
             if (target != null) {
+                seekPreviewCoordinator.commit()
                 seekPlaybackTo(target, SeekParameters.CLOSEST_SYNC)
                 updatePlaybackTimeline(currentPosition = target)
                 pendingPreviewSeekPosition = null
@@ -1282,6 +1285,7 @@ fun PlayerRuntimeController.onEvent(event: PlayerEvent) {
         }
         is PlayerEvent.OnSeekTo -> {
             if (_playbackTimeline.value.isLive) return
+            seekPreviewCoordinator.commit(null)
             pendingPreviewSeekPosition = null
             seekPlaybackTo(event.position, SeekParameters.CLOSEST_SYNC)
             updatePlaybackTimeline(currentPosition = event.position)

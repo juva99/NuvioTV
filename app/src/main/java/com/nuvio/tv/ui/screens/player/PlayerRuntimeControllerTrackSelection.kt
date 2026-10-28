@@ -36,7 +36,7 @@ internal fun PlayerRuntimeController.showSeekOverlayTemporarily() {
     hideSeekOverlayJob?.cancel()
     _uiState.update { it.copy(showSeekOverlay = true) }
     hideSeekOverlayJob = scope.launch {
-        delay(1500)
+        delay(if (seekPreviewsEnabled) SeekPreviewCoordinator.POST_COMMIT_PREVIEW_MS else 1500L)
         _uiState.update { it.copy(showSeekOverlay = false) }
     }
 }

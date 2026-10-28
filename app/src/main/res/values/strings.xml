@@ -733,6 +733,9 @@
     <string name="playback_pause_overlay_sub">Show details overlay after 5 seconds while paused.</string>
     <string name="playback_show_clock_sub">Show current time and end time while controls are visible.</string>
     <string name="playback_osd_clock">OSD Clock</string>
+    <string name="playback_seek_previews">Seek previews (experimental)</string>
+    <string name="playback_seek_previews_sub">Show approximate video thumbnails when skipping or seeking. Requires Android 8.1+ and supported HTTP videos. Uses extra data and decoding; previews may be unavailable to protect playback.</string>
+    <string name="cd_seek_preview">Approximate preview for %1$s</string>
     <string name="playback_skip_intro">Skip Intro</string>
     <string name="playback_skip_intro_sub">Use introdb.app to detect intros and recaps.</string>
     <string name="playback_parental_guide">Content Warnings</string>

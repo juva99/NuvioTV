@@ -86,6 +86,12 @@ class ProfileSettingsPluginSyncTest {
     }
 
     @Test
+    fun `experimental seek preview opt-in stays on the current device`() {
+        assertTrue(shouldExcludePreferenceFromProfileSettingsSync("player_settings", "seek_previews_enabled"))
+        assertFalse(shouldExcludePreferenceFromProfileSettingsSync("player_settings", "osd_clock_enabled"))
+    }
+
+    @Test
     fun `grouping uploads and restores after app data is cleared`() = runTest(dispatcher) {
         val harness = harness()
         harness.plugins.setGroupStreamsByRepository(true)

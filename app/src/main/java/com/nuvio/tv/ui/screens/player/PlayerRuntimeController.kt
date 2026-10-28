@@ -329,6 +329,17 @@ class PlayerRuntimeController(
     internal val _playbackTimeline = MutableStateFlow(PlaybackTimelineState())
     val playbackTimeline: StateFlow<PlaybackTimelineState> = _playbackTimeline.asStateFlow()
 
+    internal val seekPreviewExtractor = SeekPreviewFrameExtractor()
+    internal val seekPreviewCoordinator = SeekPreviewCoordinator(
+        scope = scope,
+        nowMs = android.os.SystemClock::elapsedRealtime,
+        extract = seekPreviewExtractor::extract,
+        cancelRead = seekPreviewExtractor::cancelRead,
+        sizeBytes = { it.allocationByteCount }
+    )
+    internal var seekPreviewGeneration = 0L
+    internal var seekPreviewsEnabled = false
+
     internal val liveWatchClock = LivePlaybackWatchClock()
     internal var livePlaybackLatched: Boolean = false
 
@@ -384,6 +395,7 @@ class PlayerRuntimeController(
     }
 
     internal fun resetPlaybackTimeline() {
+        invalidateSeekPreviews()
         livePlaybackLatched = false
         liveWatchClock.reset()
         pendingPreviewSeekPosition = null
@@ -615,6 +627,7 @@ class PlayerRuntimeController(
                     state.copy(pendingPreviewSeekPosition = value)
                 }
             }
+            refreshSeekPreview()
         }
     internal var pendingResumeProgress: WatchProgress? = null
     internal var hasRetriedCurrentStreamAfter416: Boolean = false
@@ -732,6 +745,7 @@ class PlayerRuntimeController(
         observeDeviceLocalTransparentLetterbox()
         observeDeviceLocalTunneledSurfaceFill()
         observePlayerStatsHud()
+        observeSeekPreviewPlaybackHealth()
     }
 
     private fun observeTorrentSettings() {
@@ -757,6 +771,7 @@ class PlayerRuntimeController(
     }
 
     fun onCleared() {
+        seekPreviewCoordinator.close()
         releasePlayer()
         stopTorrentStream()
         torrentService.shutdown()

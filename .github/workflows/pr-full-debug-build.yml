@@ -74,6 +74,7 @@ jobs:
             --tests "com.nuvio.tv.ui.screens.player.NaturalPlaybackCompletionRulesTest" \
             --tests "com.nuvio.tv.ui.screens.player.PlayerNextEpisodeRulesTest" \
             --tests "com.nuvio.tv.ui.screens.player.SkipIntroVisibilityRulesTest" \
+            --tests "com.nuvio.tv.ui.screens.player.SeekPreview*Test" \
             --tests "com.nuvio.tv.core.profileapproval.*" \
             --tests "com.nuvio.tv.core.sync.ProfileSettingsPluginSyncTest"
 

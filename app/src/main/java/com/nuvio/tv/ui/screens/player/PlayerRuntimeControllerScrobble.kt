@@ -17,6 +17,7 @@ internal fun PlayerRuntimeController.preparePlaybackBeforeStart(
     val playbackUrl = playbackRequest.url
     val playbackHeaders = playbackRequest.headers
     if (playbackUrl != currentStreamUrl || playbackHeaders != currentHeaders) {
+        invalidateSeekPreviews()
         currentStreamUrl = playbackUrl
         currentHeaders = playbackHeaders
         _uiState.update { it.copy(currentStreamUrl = playbackUrl) }
