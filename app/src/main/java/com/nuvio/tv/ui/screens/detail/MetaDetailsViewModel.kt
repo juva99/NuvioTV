@@ -40,6 +40,7 @@ import com.nuvio.tv.domain.repository.MetaRepository
 import com.nuvio.tv.domain.repository.WatchProgressRepository
 import com.nuvio.tv.data.local.WatchedItemsPreferences
 import com.nuvio.tv.data.local.TrailerSettingsDataStore
+import com.nuvio.tv.data.mediaserver.ServerItemRef
 import com.nuvio.tv.data.trailer.TrailerService
 import com.nuvio.tv.core.util.withAppLocale
 import com.nuvio.tv.core.util.isUnreleased
@@ -76,6 +77,16 @@ import javax.inject.Inject
 
 private const val TAG = "MetaDetailsViewModel"
 
+/**
+ * Whether pressing Back on the full-screen trailer should hand playback back to the
+ * detail page as a background trailer instead of stopping it.
+ */
+internal fun shouldContinueTrailerInBackgroundOnBack(
+    isTrailerPlaying: Boolean,
+    autoplayEnabled: Boolean,
+    playInBackground: Boolean
+): Boolean = isTrailerPlaying && autoplayEnabled && playInBackground
+
 @HiltViewModel
 class MetaDetailsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -108,6 +119,7 @@ class MetaDetailsViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle
 ) : ViewModel() {
     private val itemId: String = savedStateHandle["itemId"] ?: ""
+    private val isServerItem = ServerItemRef.isServerId(itemId)
     private val itemType: String = savedStateHandle["itemType"] ?: ""
     private val preferredAddonBaseUrl: String? = savedStateHandle["addonBaseUrl"]
 
@@ -167,6 +179,7 @@ class MetaDetailsViewModel @Inject constructor(
         observeTraktCommentsAvailability()
         observeLibraryState()
         observeWatchProgress()
+        observeMovieResumeProgress()
         observeWatchedEpisodes()
         observeMovieWatched()
         observeRelatedWatchedStatus()
@@ -359,6 +372,7 @@ class MetaDetailsViewModel @Inject constructor(
             MetaDetailsEvent.OnPlayButtonFocused -> handlePlayButtonFocused()
             MetaDetailsEvent.OnTrailerButtonClick -> handleTrailerButtonClick()
             MetaDetailsEvent.OnTrailerEnded -> handleTrailerEnded()
+            MetaDetailsEvent.OnTrailerBackPress -> handleTrailerBackPress()
             is MetaDetailsEvent.OnSharedTrailerSelected -> handleSharedTrailerSelected(event.trailer)
             MetaDetailsEvent.OnDismissSharedTrailer -> dismissSharedTrailerOverlay()
             MetaDetailsEvent.OnRetrySharedTrailer -> retrySharedTrailer()
@@ -496,6 +510,17 @@ class MetaDetailsViewModel @Inject constructor(
                 reevaluateSeriesWatchedBadge()
                 calculateNextToWatch()
             }
+        }
+    }
+
+    private fun observeMovieResumeProgress() {
+        if (!itemType.equals("movie", ignoreCase = true)) return
+
+        viewModelScope.launch {
+            _effectiveContentId
+                .flatMapLatest { contentId -> watchProgressRepository.getProgress(contentId) }
+                .distinctUntilChanged()
+                .collectLatest { calculateNextToWatch() }
         }
     }
 
@@ -997,9 +1022,8 @@ class MetaDetailsViewModel @Inject constructor(
     }
 
     private suspend fun applyMetaWithEnrichment(meta: Meta) {
-        // Fire all independent async jobs immediately — they run in parallel.
-        loadMoreLikeThisAsync(meta)
-        val enriched = enrichMeta(meta)
+        if (!isServerItem) loadMoreLikeThisAsync(meta)
+        val enriched = if (isServerItem) meta else enrichMeta(meta)
 
         syncEffectiveContentId(enriched)
         val cachedNextToWatch = metaDetailsSessionState.getNextToWatch(
@@ -1015,6 +1039,13 @@ class MetaDetailsViewModel @Inject constructor(
         )
 
         val contentId = _effectiveContentId.value
+
+        // Ratings don't depend on watch progress, so start them before the remote
+        // progress wait below, which can take long or never finish if the sync keeps failing.
+        if (!isServerItem) {
+            loadEpisodeRatingsAsync(enriched)
+            viewModelScope.launch { loadMDBListRatings(enriched) }
+        }
 
         // Wait for remote progress provider (Simkl/Trakt) to finish initial load.
         watchProgressRepository.observeRemoteProgressLoaded().first { it }
@@ -1035,10 +1066,6 @@ class MetaDetailsViewModel @Inject constructor(
         val watchedEpisodes = watchedDeferred.await()
         val precomputedNextToWatch = computeNextToWatch(enriched, progressMap, watchedEpisodes)
         updateNextToWatch(precomputedNextToWatch)
-
-        // Episode ratings and MDBList are independent — launch both without waiting.
-        loadEpisodeRatingsAsync(enriched)
-        viewModelScope.launch { loadMDBListRatings(enriched) }
     }
 
     private fun NextToWatch.resolveForMeta(meta: Meta): NextToWatch? {
@@ -1149,7 +1176,7 @@ class MetaDetailsViewModel @Inject constructor(
     }
 
     private fun supportsComments(meta: Meta?): Boolean {
-        if (meta == null) return false
+        if (meta == null || isServerItem) return false
         return when (meta.type) {
             ContentType.MOVIE -> true
             ContentType.SERIES, ContentType.TV -> true
@@ -1852,11 +1879,13 @@ class MetaDetailsViewModel @Inject constructor(
         val meta = _uiState.value.meta ?: return
         val progressMap = _uiState.value.episodeProgressMap
         val watchedEpisodes = _uiState.value.watchedEpisodes
+        val isSeries = meta.apiType.equals("series", ignoreCase = true) ||
+            meta.apiType.equals("tv", ignoreCase = true)
 
         // Don't override an existing nextToWatch with a computation from empty progress data.
         // The inline computation in applyMetaWithEnrichment reads directly from the repo
         // and may have better data than the UI state observer at this point.
-        if (progressMap.isEmpty() && watchedEpisodes.isEmpty() && _uiState.value.nextToWatch != null) {
+        if (isSeries && progressMap.isEmpty() && watchedEpisodes.isEmpty() && _uiState.value.nextToWatch != null) {
             return
         }
 
@@ -2170,16 +2199,8 @@ class MetaDetailsViewModel @Inject constructor(
         return meta.videos.firstOrNull { it.id == defaultVideoId && it.available != false }
     }
 
-    private fun shouldResumeProgress(progress: WatchProgress): Boolean {
-        if (progress.isCompleted()) return false
-        if (progress.progressPercentage >= 0.02f) return true
-
-        val hasStartedPlayback = progress.position > 0L ||
-            progress.progressPercent?.let { it > 0f } == true
-        return hasStartedPlayback &&
-            progress.source != WatchProgress.SOURCE_TRAKT_HISTORY &&
-            progress.source != WatchProgress.SOURCE_TRAKT_SHOW_PROGRESS
-    }
+    // Same rule the player uses to resume, so Resume never restarts from 0
+    private fun shouldResumeProgress(progress: WatchProgress): Boolean = progress.isInProgress()
 
     private fun toggleLibrary() {
         if (
@@ -2820,6 +2841,7 @@ class MetaDetailsViewModel @Inject constructor(
     // --- Trailer ---
 
     private fun fetchTrailerUrl() {
+        if (isServerItem) return
         val meta = _uiState.value.meta ?: return
 
         trailerFetchJob?.cancel()
@@ -2971,6 +2993,28 @@ class MetaDetailsViewModel @Inject constructor(
             isPlaying = false,
             showControls = false,
             hideLogo = false
+        )
+    }
+
+    private fun handleTrailerBackPress() {
+        val continueInBackground = shouldContinueTrailerInBackgroundOnBack(
+            isTrailerPlaying = _uiState.value.isTrailerPlaying,
+            autoplayEnabled = trailerAutoplayEnabled,
+            playInBackground = trailerPlayInBackground
+        )
+        if (!continueInBackground) {
+            handleTrailerEnded()
+            return
+        }
+        // Hand the running trailer back to the detail page without restarting it.
+        trailerHasPlayed = true
+        isPlayButtonFocused = false
+        idleTimerJob?.cancel()
+        setTrailerPlaybackState(
+            isPlaying = false,
+            showControls = false,
+            hideLogo = false,
+            isBackgroundPlaying = true
         )
     }
 

@@ -73,12 +73,17 @@ jobs:
             fi
             git diff --name-only --diff-filter=U > "$RUNNER_TEMP/upstream-conflicts.txt"
             git merge --abort
-            git push origin "$fetched_sha:refs/heads/$conflict_branch"
+            fork_sha="$(git rev-parse HEAD)"
             python3 scripts/upstream_release.py conflict-pr \
               --tag "$UPSTREAM_TAG" \
               --conflicts "$RUNNER_TEMP/upstream-conflicts.txt" \
               --approval-url "https://github.com/$GITHUB_REPOSITORY/issues/14" \
               > "$RUNNER_TEMP/upstream-pr.md"
+            python3 scripts/upstream_release.py conflict-branch \
+              --tag "$UPSTREAM_TAG" \
+              --upstream-sha "$fetched_sha" \
+              --fork-ref "$fork_sha"
+            git push origin "HEAD:refs/heads/$conflict_branch"
             pr_url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base dev \
               --head "$conflict_branch" --title "Merge upstream stable $UPSTREAM_TAG" \
               --body-file "$RUNNER_TEMP/upstream-pr.md")"

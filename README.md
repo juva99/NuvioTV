@@ -70,7 +70,7 @@ and approval actions have not been device-verified.
 
 ## Minimal fork
 
-`juva99/NuvioTV` is aligned with upstream's published `1.1.0-beta.5` tag.
+`juva99/NuvioTV` is aligned with upstream's published `1.1.0` tag.
 Subtitle AutoSync, its settings, and its player integration come directly from
 upstream. The fork's old subtitle alignment engines, reference scanner,
 GitHub sync-failure reporting, and associated authorization UI have been removed.
@@ -114,7 +114,9 @@ environment (or `local.properties` for local builds). Release publication stops
 if the secret is missing. Never commit the key or expose it to pull-request builds.
 
 Merge conflicts create one open resolution PR into `dev`; subsequent runs wait
-for it to be merged. Resolve conflicts without reintroducing the old sync stack.
+for it to be merged. Resolution branches retain the fork's workflow files so the
+Actions token can push them without workflow-edit permission. Resolve conflicts
+without reintroducing the old sync stack.
 Other failed checks stop publication. A failed build may leave the merge on
 `dev`; the next run retries unpublished upstream releases. Missed releases are
 processed oldest first, one per run. Publication also refuses a build if `dev`

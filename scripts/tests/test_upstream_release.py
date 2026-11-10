@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import subprocess
+import tempfile
 import unittest
+from contextlib import chdir
 from pathlib import Path
 
-from upstream_release import conflict_pr_body, next_version_code, plan_release, release_channel
+from upstream_release import (
+    conflict_pr_body, next_version_code, plan_release, prepare_conflict_branch, release_channel,
+)
 
 
 def release(tag, date, **overrides):
@@ -151,6 +156,48 @@ class UpstreamReleaseTests(unittest.TestCase):
         self.assertIn("- `app/example.kt`", body)
         self.assertIn("No APK build or player/updater tests were run", body)
         self.assertIn("- [x] Approved larger or directional change", body)
+
+    def test_conflict_branch_keeps_upstream_app_and_exact_fork_workflows(self):
+        with tempfile.TemporaryDirectory() as directory, chdir(directory):
+            def git(*args):
+                return subprocess.run(
+                    ["git", *args], check=True, capture_output=True, text=True
+                ).stdout.strip()
+
+            git("init", "--initial-branch=dev")
+            git("config", "user.name", "Release Test")
+            git("config", "user.email", "release-test@example.com")
+            workflows = Path(".github/workflows")
+            workflows.mkdir(parents=True)
+            (workflows / "build.yml").write_text("upstream build\n")
+            Path("app.txt").write_text("baseline\n")
+            git("add", ".")
+            git("commit", "-m", "Baseline")
+            baseline = git("rev-parse", "HEAD")
+            (workflows / "build.yml").write_text("fork build without secrets\n")
+            (workflows / "fork-release.yml").write_text("permanent fork signing\n")
+            git("add", ".")
+            git("commit", "-m", "Fork workflows")
+            fork = git("rev-parse", "HEAD")
+            git("switch", "--create", "upstream", baseline)
+            Path("app.txt").write_text("published upstream app\n")
+            (workflows / "upstream-only.yml").write_text("upstream automation\n")
+            git("add", ".")
+            git("commit", "-m", "Upstream release")
+            upstream = git("rev-parse", "HEAD")
+            git("switch", "dev")
+
+            prepare_conflict_branch("1.1.0", upstream, fork)
+
+            self.assertEqual(git("branch", "--show-current"), "automation/upstream-stable-1.1.0")
+            self.assertEqual(git("diff", fork, "HEAD", "--", ".github/workflows"), "")
+            self.assertEqual(Path("app.txt").read_text(), "published upstream app\n")
+            git("merge-base", "--is-ancestor", upstream, "HEAD")
+            self.assertEqual(git("status", "--porcelain"), "")
+
+            git("switch", "dev")
+            prepare_conflict_branch("1.1.1", fork, fork)
+            self.assertEqual(git("rev-parse", "HEAD"), fork)
 
 
 if __name__ == "__main__":
