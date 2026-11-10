@@ -68,6 +68,10 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.runtime.State
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.key.onPreviewKeyEvent
@@ -78,6 +82,13 @@ import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import com.nuvio.tv.R
 import com.nuvio.tv.ui.util.dpadVerticalFastScroll
 import androidx.lifecycle.Lifecycle
@@ -499,7 +510,7 @@ fun MetaDetailsScreen(
         } else if (uiState.isTrailerPlaying) {
             restorePlayFocusAfterTrailerBackToken += 1
             isTrailerPaused = false
-            viewModel.onEvent(MetaDetailsEvent.OnTrailerEnded)
+            viewModel.onEvent(MetaDetailsEvent.OnTrailerBackPress)
         } else {
             onBackPress()
         }
@@ -1140,11 +1151,15 @@ fun MetaDetailsScreen(
         }
 
         if (uiState.isTrailerPlaying && uiState.showTrailerControls) {
+            // This surface exists only to capture remote keys (back/play/pause/seek) while the
+            // trailer is playing, so it has no visible label of its own to announce.
+            val trailerControlsDescription = stringResource(R.string.cd_trailer_controls)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .focusRequester(trailerControllerFocusRequester)
                     .focusable()
+                    .semantics { contentDescription = trailerControlsDescription }
             )
         }
 
@@ -1805,6 +1820,12 @@ private fun MetaDetailsContent(
         }
     }
 
+    val belowHeroAlpha = animateFloatAsState(
+        targetValue = if (isTrailerPlaying) 0f else 1f,
+        animationSpec = tween(NuvioMotion.tokens.durations.overlay),
+        label = "belowHeroFade"
+    )
+
     // Pre-compute cast members to avoid recomputation in lazy scope
     val castMembersToShow = remember(meta.castMembers, meta.cast) {
         if (meta.castMembers.isNotEmpty()) {
@@ -2306,7 +2327,9 @@ private fun MetaDetailsContent(
 
         // Single scrollable column with hero + content
         CompositionLocalProvider(
-            LocalBringIntoViewSpec provides if (suppressRestoreBringIntoView) {
+            // The hero grows to full height during a trailer; keep the list from
+            // scrolling to follow the focused hero while it resizes.
+            LocalBringIntoViewSpec provides if (suppressRestoreBringIntoView || isTrailerPlaying) {
                 restoreNoScrollBringIntoViewSpec
             } else {
                 detailPageBringIntoViewSpec
@@ -2316,6 +2339,7 @@ private fun MetaDetailsContent(
             modifier = Modifier
                 .fillMaxSize()
                 .recompositionHighlighter()
+                .fadeBelowHero(listState, belowHeroAlpha)
                 .onPreviewKeyEvent { event ->
                     val native = event.nativeKeyEvent
                     if (native.action == KeyEvent.ACTION_DOWN) {
@@ -3186,6 +3210,36 @@ private fun PlaybackHandoffBackdrop(backdropUrl: String?) {
     }
 }
 
+/**
+ * Fades the rows below the hero item while a full-screen trailer plays. On screens
+ * taller than the hero (lower-density TV boxes) the next row would otherwise sit over
+ * the trailer.
+ */
+private fun Modifier.fadeBelowHero(
+    listState: LazyListState,
+    alpha: State<Float>
+): Modifier = drawWithCache {
+    val layerPaint = Paint()
+    onDrawWithContent {
+        val belowHeroAlpha = alpha.value
+        if (belowHeroAlpha >= 1f) {
+            drawContent()
+            return@onDrawWithContent
+        }
+        val heroBottom = listState.layoutInfo.visibleItemsInfo
+            .firstOrNull { it.key == "hero" }
+            ?.let { (it.offset + it.size).toFloat() }
+            ?: 0f
+        clipRect(bottom = heroBottom) { this@onDrawWithContent.drawContent() }
+        if (belowHeroAlpha > 0f) {
+            layerPaint.alpha = belowHeroAlpha
+            drawContext.canvas.saveLayer(Rect(0f, heroBottom, size.width, size.height), layerPaint)
+            clipRect(top = heroBottom) { this@onDrawWithContent.drawContent() }
+            drawContext.canvas.restore()
+        }
+    }
+}
+
 @Composable
 private fun BackdropLayer(
     backdropRequest: ImageRequest,
@@ -3212,28 +3266,35 @@ private fun BackdropLayer(
     val isBackgroundTrailerPaused =
         isBackgroundTrailerPlaying && pauseBackgroundTrailerOnScroll && isScrolledPastHero
     val isBackgroundTrailerVisible = isBackgroundTrailerPlaying && !isBackgroundTrailerPaused
-    var isBackgroundTrailerRendered by remember(isBackgroundTrailerPlaying) { mutableStateOf(false) }
+    // Keep the backdrop until the trailer has a frame to show; the request alone can be many
+    // seconds ahead of it while the stream is fetched and buffered.
+    // Keyed on "any trailer playing" rather than the individual modes: switching between the
+    // background and full-screen trailer keeps the same player running, so no new first frame
+    // arrives and resetting here would leave the gradient and backdrop stuck on screen.
+    val isAnyTrailerPlaying = isTrailerPlaying || isBackgroundTrailerPlaying
+    var isTrailerRendered by remember(isAnyTrailerPlaying, trailerUrl) { mutableStateOf(false) }
     val backdropAlphaState = animateFloatAsState(
         targetValue = when {
-            isTrailerPlaying -> 0f
-            isBackgroundTrailerVisible && isBackgroundTrailerRendered -> 0f
+            isTrailerPlaying && isTrailerRendered -> 0f
+            isBackgroundTrailerVisible && isTrailerRendered -> 0f
             isScrolledPastHero -> 0.15f
             else -> 1f
         },
         animationSpec = tween(durationMillis = if (isScrolledPastHero) 300 else 800),
         label = "backdropFade"
     )
-    val backgroundTrailerAlphaState = animateFloatAsState(
+    val trailerAlphaState = animateFloatAsState(
         targetValue = when {
+            isTrailerPlaying -> 1f
             !isBackgroundTrailerVisible -> 0f
             isScrolledPastHero -> 0.15f
             else -> 1f
         },
         animationSpec = tween(durationMillis = if (isScrolledPastHero) 300 else 800),
-        label = "backgroundTrailerFade"
+        label = "trailerFade"
     )
     val gradientAlphaState = animateFloatAsState(
-        targetValue = if (isTrailerPlaying || isScrolledPastHero) 0f else 1f,
+        targetValue = if ((isTrailerPlaying && isTrailerRendered) || isScrolledPastHero) 0f else 1f,
         animationSpec = tween(durationMillis = if (isScrolledPastHero) 300 else 800),
         label = "gradientFade"
     )
@@ -3269,13 +3330,14 @@ private fun BackdropLayer(
             onRemoteKey = onTrailerControlKey,
             onProgressChanged = onTrailerProgressChanged,
             onEnded = onTrailerEnded,
-            onFirstFrameRendered = { isBackgroundTrailerRendered = true },
+            onError = onTrailerEnded,
+            onFirstFrameRendered = { isTrailerRendered = true },
             cropToFill = isBackgroundTrailerPlaying,
             autoCropLetterbox = isBackgroundTrailerPlaying,
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    alpha = if (isBackgroundTrailerPlaying) backgroundTrailerAlphaState.value else 1f
+                    alpha = if (isAnyTrailerPlaying) trailerAlphaState.value else 1f
                 }
         )
         Box(
@@ -3320,11 +3382,12 @@ private fun PeopleSectionTabs(
         fun androidx.compose.foundation.layout.RowScope.renderTabs(items: List<PeopleTabItem>) {
             items.forEachIndexed { index, item ->
                 if (index > 0) {
-                    Text(
-                        text = "|",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = NuvioTheme.colors.TextPrimary.copy(alpha = 0.45f),
-                        modifier = Modifier.padding(horizontal = 10.dp)
+                    Spacer(
+                        modifier = Modifier
+                            .padding(horizontal = 10.dp)
+                            .width(1.dp)
+                            .height(16.dp)
+                            .background(NuvioTheme.colors.TextPrimary.copy(alpha = 0.45f))
                     )
                 }
 
@@ -3388,6 +3451,10 @@ private fun PeopleSectionTabButton(
                 if (focusedNow) {
                     onFocused()
                 }
+            }
+            .semantics {
+                role = Role.Tab
+                this.selected = selected
             },
         colors = CardDefaults.colors(
             containerColor = Color.Transparent,
@@ -3454,16 +3521,22 @@ private fun LibraryListPickerDialog(
         ) {
             items(tabs, key = { it.key }) { tab ->
                 val selected = membership[tab.key] == true
-                val titleText = if (selected) "\u2713 ${tab.localizedMembershipTitle()}" else tab.localizedMembershipTitle()
+                // The membership state is exposed through semantics below instead of a leading
+                // glyph in the label, so screen readers hear one clean name plus the state.
+                val titleText = tab.localizedMembershipTitle()
+                val rowModifier = if (tab.key == tabs.firstOrNull()?.key) {
+                    Modifier
+                        .fillMaxWidth()
+                        .focusRequester(primaryFocusRequester)
+                } else {
+                    Modifier.fillMaxWidth()
+                }
                 Button(
                     onClick = { onToggle(tab.key) },
                     enabled = !isPending,
-                    modifier = if (tab.key == tabs.firstOrNull()?.key) {
-                        Modifier
-                            .fillMaxWidth()
-                            .focusRequester(primaryFocusRequester)
-                    } else {
-                        Modifier.fillMaxWidth()
+                    modifier = rowModifier.semantics {
+                        role = Role.Checkbox
+                        toggleableState = if (selected) ToggleableState.On else ToggleableState.Off
                     },
                     colors = ButtonDefaults.colors(
                         containerColor = if (selected) NuvioTheme.colors.FocusBackground else NuvioTheme.colors.BackgroundCard,

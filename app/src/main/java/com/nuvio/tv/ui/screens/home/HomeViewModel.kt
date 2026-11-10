@@ -1,5 +1,6 @@
 package com.nuvio.tv.ui.screens.home
 
+import android.util.Log
 import android.content.Context
 import android.os.SystemClock
 import androidx.compose.runtime.mutableStateMapOf
@@ -8,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.nuvio.tv.LocaleCache
 import com.nuvio.tv.core.player.StreamAutoPlayPolicy
 import com.nuvio.tv.core.recommendations.TvRecommendationManager
+import com.nuvio.tv.core.tmdb.MetaPreviewEnricher
 import com.nuvio.tv.core.tmdb.TmdbMetadataService
 import com.nuvio.tv.core.tmdb.TmdbService
 import com.nuvio.tv.data.local.AuthSessionNoticeDataStore
@@ -19,6 +21,7 @@ import com.nuvio.tv.data.local.MDBListSettingsDataStore
 import com.nuvio.tv.data.local.TmdbSettingsDataStore
 import com.nuvio.tv.data.local.TraktSettingsDataStore
 import com.nuvio.tv.data.local.ContinueWatchingEnrichmentCache
+import com.nuvio.tv.data.mediaserver.ServerCatalog
 import com.nuvio.tv.data.trailer.TrailerService
 import com.nuvio.tv.domain.model.Addon
 import com.nuvio.tv.domain.model.CatalogDescriptor
@@ -84,7 +87,13 @@ class HomeViewModel @Inject constructor(
     internal val watchedSeriesStateHolder: com.nuvio.tv.data.local.WatchedSeriesStateHolder,
     internal val cwEnrichmentCache: ContinueWatchingEnrichmentCache,
     internal val profileManager: com.nuvio.tv.core.profile.ProfileManager,
-    internal val tvRecommendationManager: TvRecommendationManager
+    internal val tvRecommendationManager: TvRecommendationManager,
+    internal val serverCatalog: ServerCatalog,
+    internal val metaPreviewEnricher: MetaPreviewEnricher = MetaPreviewEnricher(
+        tmdbService,
+        tmdbMetadataService,
+        mdbListRepository
+    )
 ) : ViewModel() {
     companion object {
         internal const val TAG = "HomeViewModel"
@@ -685,6 +694,7 @@ class HomeViewModel @Inject constructor(
         when (event) {
             is HomeEvent.OnItemClick -> navigateToDetail(event.itemId, event.itemType)
             is HomeEvent.OnLoadMoreCatalog -> loadMoreCatalogItems(event.catalogId, event.addonId, event.type)
+            is HomeEvent.OnMarkContinueWatchingWatched -> markContinueWatchingWatched(event.item)
             is HomeEvent.OnRemoveContinueWatching -> removeContinueWatching(
                 contentId = event.contentId,
                 season = event.season,
@@ -726,7 +736,7 @@ class HomeViewModel @Inject constructor(
                         ),
                         episodeThumbnail = cached.episodeThumbnail,
                         episodeDescription = cached.episodeDescription,
-                        episodeImdbRating = cached.episodeImdbRating,
+                        episodeImdbRating = if (cached.ratingVisible) cached.episodeImdbRating else null,
                         genres = cached.genres,
                         releaseInfo = cached.releaseInfo
                     )
@@ -753,7 +763,7 @@ class HomeViewModel @Inject constructor(
                         hasAired = cached.hasAired,
                         airDateLabel = cached.airDateLabel,
                         lastWatched = cached.lastWatched,
-                        imdbRating = cached.imdbRating,
+                        imdbRating = if (cached.ratingVisible) cached.imdbRating else null,
                         genres = cached.genres,
                         releaseInfo = cached.releaseInfo,
                         sortTimestamp = cached.sortTimestamp,
@@ -792,6 +802,14 @@ class HomeViewModel @Inject constructor(
         episode = episode,
         isNextUp = isNextUp
     )
+
+    private fun markContinueWatchingWatched(item: ContinueWatchingItem) {
+        if (!item.canMarkWatched()) return
+        viewModelScope.launch {
+            runCatching { watchProgressRepository.markAsCompleted(item.toCompletedProgress()) }
+                .onFailure { error -> Log.w(TAG, "Failed to mark continue watching item as watched", error) }
+        }
+    }
 
     private fun observeCollections() = observeCollectionsPipeline()
 

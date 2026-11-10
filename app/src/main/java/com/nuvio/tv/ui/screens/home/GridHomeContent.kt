@@ -109,6 +109,7 @@ fun GridHomeContent(
     onNavigateToCatalogSeeAll: (String, String, String) -> Unit,
     onNavigateToFolderDetail: (String, String) -> Unit = { _, _ -> },
     onRemoveContinueWatching: (String, Int?, Int?, Boolean) -> Unit,
+    onMarkContinueWatchingWatched: (ContinueWatchingItem) -> Unit = {},
     isCatalogItemWatched: (MetaPreview) -> Boolean = { false },
     onCatalogItemLongPress: (MetaPreview, String) -> Unit = { _, _ -> },
     posterCardStyle: PosterCardStyle = PosterCardDefaults.Style,
@@ -190,11 +191,20 @@ fun GridHomeContent(
 
     // Offset for section indices: pre-items + continue watching item (if present)
     val gridItems = uiState.gridItems
-    val continueWatchingItems = if (uiState.continueWatchingEnabled)
-        uiState.continueWatchingItems.withCustomPosterUrls(
-            com.nuvio.tv.core.poster.patternForScreen(uiState.customPosterUrlPattern, com.nuvio.tv.core.poster.CustomPosterScreen.CONTINUE_WATCHING, uiState.customPosterEnabledScreens)
-        )
-    else emptyList()
+    val continueWatchingItems = remember(
+        uiState.continueWatchingEnabled,
+        uiState.continueWatchingItems,
+        uiState.customPosterUrlPattern,
+        uiState.customPosterEnabledScreens,
+    ) {
+        if (uiState.continueWatchingEnabled) {
+            uiState.continueWatchingItems.withCustomPosterUrls(
+                com.nuvio.tv.core.poster.patternForScreen(uiState.customPosterUrlPattern, com.nuvio.tv.core.poster.CustomPosterScreen.CONTINUE_WATCHING, uiState.customPosterEnabledScreens)
+            )
+        } else {
+            emptyList()
+        }
+    }
     val continueWatchingOffset = if (continueWatchingItems.isNotEmpty()) 1 else 0
 
     LaunchedEffect(gridItems, gridFocusState.hasSavedFocus, gridFocusState.focusedItemKey) {
@@ -487,6 +497,7 @@ fun GridHomeContent(
                                 showImdbRatings = uiState.homeImdbRatingsVisibility.showRatings,
                                 mdbListShowOnHero = uiState.mdbListShowOnHero,
                                 mdbListRatingOrder = uiState.mdbListRatingOrder,
+                                descriptionAutoScrollEnabled = uiState.heroDescriptionAutoScrollEnabled,
                                 initialActiveIndex = savedHeroIndex.intValue,
                                 onItemFocus = {
                                     lastFocusedGridItemKey.value = "hero"
@@ -555,6 +566,7 @@ fun GridHomeContent(
                                 ""
                             )
                         },
+                        onMarkWatched = onMarkContinueWatchingWatched,
                         onRemoveItem = { item ->
                             val contentId = when (item) {
                                 is ContinueWatchingItem.InProgress -> item.progress.contentId
@@ -598,9 +610,15 @@ fun GridHomeContent(
                     GridContinueWatchingSection(
                         modifier = Modifier.fillMaxWidth(),
                         fullWidth = gridWidth,
-                        items = uiState.upcomingItems.withCustomPosterUrls(
-                            com.nuvio.tv.core.poster.patternForScreen(uiState.customPosterUrlPattern, com.nuvio.tv.core.poster.CustomPosterScreen.CONTINUE_WATCHING, uiState.customPosterEnabledScreens)
-                        ),
+                        items = remember(
+                            uiState.upcomingItems,
+                            uiState.customPosterUrlPattern,
+                            uiState.customPosterEnabledScreens,
+                        ) {
+                            uiState.upcomingItems.withCustomPosterUrls(
+                                com.nuvio.tv.core.poster.patternForScreen(uiState.customPosterUrlPattern, com.nuvio.tv.core.poster.CustomPosterScreen.CONTINUE_WATCHING, uiState.customPosterEnabledScreens)
+                            )
+                        },
                         title = stringResource(R.string.upcoming_section_title),
                         lastFocusedIndex = lastFocusedUpcomingIndex,
                         focusRequesters = upcomingFocusRequesters,
@@ -624,6 +642,7 @@ fun GridHomeContent(
                                 ""
                             )
                         },
+                        onMarkWatched = onMarkContinueWatchingWatched,
                         onRemoveItem = { item ->
                             val contentId = when (item) {
                                 is ContinueWatchingItem.InProgress -> item.progress.contentId
@@ -681,6 +700,7 @@ fun GridHomeContent(
                                 showImdbRatings = uiState.homeImdbRatingsVisibility.showRatings,
                                 mdbListShowOnHero = uiState.mdbListShowOnHero,
                                 mdbListRatingOrder = uiState.mdbListRatingOrder,
+                                descriptionAutoScrollEnabled = uiState.heroDescriptionAutoScrollEnabled,
                                 initialActiveIndex = savedHeroIndex.intValue,
                                 onItemFocus = {
                                     lastFocusedGridItemKey.value = "hero"
@@ -979,7 +999,7 @@ private fun SeeAllGridCard(
                 ) {
                     Icon(
                         imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                        contentDescription = label ?: stringResource(R.string.action_see_all),
+                        contentDescription = null,
                         modifier = Modifier.size(NuvioTheme.spacing.xxl),
                         tint = NuvioTheme.colors.TextSecondary
                     )

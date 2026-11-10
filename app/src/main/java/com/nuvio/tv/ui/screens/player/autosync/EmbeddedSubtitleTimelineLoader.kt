@@ -8,6 +8,7 @@ import androidx.media3.container.Mp4Box
 import androidx.media3.extractor.GaplessInfoHolder
 import androidx.media3.extractor.mp4.BoxParser
 import androidx.media3.extractor.mp4.TrackSampleTable
+import com.nuvio.tv.core.network.NoDelaySocketFactory
 import com.nuvio.tv.ui.screens.player.SubtitleSyncCue
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -58,6 +59,8 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val LAST_MKV_CUE_ESTIMATED_DURATION_MS = 2_000L
     private const val MAX_MKV_INTER_CUE_ESTIMATED_DURATION_MS = 4_000L
     private const val MATROSKA_PGS_CODEC_ID = "S_HDMV/PGS"
+    private const val MATROSKA_ASS_CODEC_ID = "S_TEXT/ASS"
+    private const val MATROSKA_SSA_CODEC_ID = "S_TEXT/SSA"
     private const val MIN_INDEXED_CUES = 8
     private const val MIN_INDEXED_SPAN_MS = 30_000L
     private const val MAX_CACHE_ENTRIES = 2
@@ -107,6 +110,7 @@ internal object EmbeddedSubtitleTimelineLoader {
     private const val ID_CUE_DURATION = 0xB2L
 
     private val httpClient = OkHttpClient.Builder()
+        .socketFactory(NoDelaySocketFactory)
         .connectTimeout(3, TimeUnit.SECONDS)
         .readTimeout(4, TimeUnit.SECONDS)
         .callTimeout(5, TimeUnit.SECONDS)
@@ -169,6 +173,9 @@ internal object EmbeddedSubtitleTimelineLoader {
                 // The owning load was cancelled (e.g. its player closed). Load for this caller
                 // unless this caller itself is the one being cancelled.
                 currentCoroutineContext().ensureActive()
+                synchronized(cacheLock) {
+                    if (inFlight[cacheKey] === activeLoad) inFlight.remove(cacheKey)
+                }
                 load(sourceUrl, sourceHeaders)
             }
         }
@@ -177,10 +184,10 @@ internal object EmbeddedSubtitleTimelineLoader {
             return loadAndCache(cacheKey, sourceUrl, sourceHeaders)
                 .also(ownedLoad::complete)
         } finally {
-            ownedLoad.cancel()
             synchronized(cacheLock) {
                 if (inFlight[cacheKey] === ownedLoad) inFlight.remove(cacheKey)
             }
+            ownedLoad.cancel()
         }
     }
 
@@ -399,9 +406,18 @@ internal object EmbeddedSubtitleTimelineLoader {
 
         val referenceTracks = subtitleTracks.mapNotNull { track ->
             val parsedTimeline = parsedCues[track.number] ?: return@mapNotNull null
-            val cues = parsedTimeline.cues
+            val indexedCues = parsedTimeline.cues
                 .sortedBy { it.startTimeMs }
                 .distinctBy { it.startTimeMs }
+            // ASS/SSA tracks index every sign and karaoke event along with the dialogue.
+            val cues = if (isMatroskaAssCodec(track.codecId)) {
+                AutoSyncAssDialogueFilter.indexedDialogueCues(
+                    cues = indexedCues,
+                    estimatedEndStartsMs = parsedTimeline.estimatedEndStartsMs,
+                )
+            } else {
+                indexedCues
+            }
             if (cues.size < MIN_INDEXED_CUES) return@mapNotNull null
             val spanMs = cues.last().startTimeMs - cues.first().startTimeMs
             if (spanMs < MIN_INDEXED_SPAN_MS) return@mapNotNull null
@@ -1270,6 +1286,10 @@ internal object EmbeddedSubtitleTimelineLoader {
             estimatedEndStartsMs = estimatedEndStartsMs,
         )
     }
+
+    private fun isMatroskaAssCodec(codecId: String?): Boolean =
+        codecId.equals(MATROSKA_ASS_CODEC_ID, ignoreCase = true) ||
+            codecId.equals(MATROSKA_SSA_CODEC_ID, ignoreCase = true)
 
     private fun buildFallbackTrackLabel(track: MatroskaSubtitleTrack): String {
         val language = track.languageIetf?.takeIf { it.isNotBlank() }

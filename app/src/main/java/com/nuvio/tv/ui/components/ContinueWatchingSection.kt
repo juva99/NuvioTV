@@ -63,14 +63,13 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.tv.material3.Border
-import androidx.tv.material3.Card
-import androidx.tv.material3.CardDefaults
 import androidx.tv.material3.ExperimentalTvMaterial3Api
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Button
 import androidx.tv.material3.ButtonDefaults
 import androidx.tv.material3.Text
 import com.nuvio.tv.ui.screens.home.ContinueWatchingItem
+import com.nuvio.tv.ui.screens.home.canMarkWatched
 import com.nuvio.tv.ui.theme.NuvioTheme
 import androidx.compose.ui.platform.LocalContext
 import coil3.compose.AsyncImage
@@ -133,6 +132,7 @@ fun ContinueWatchingSection(
     onStartFromBeginning: (ContinueWatchingItem) -> Unit = {},
     showManualPlayOption: Boolean = false,
     onPlayManually: (ContinueWatchingItem) -> Unit = {},
+    onMarkWatched: (ContinueWatchingItem) -> Unit = {},
     modifier: Modifier = Modifier,
     title: String? = null,
     focusedItemIndex: Int = -1,
@@ -318,6 +318,11 @@ fun ContinueWatchingSection(
             showPlayManually = showManualPlayOption,
             onPlayManually = {
                 onPlayManually(menuItem)
+                optionsItem = null
+            },
+            onMarkWatched = {
+                pendingFocusIndex = if (items.size <= 1) null else minOf(lastFocusedIndex, items.lastIndex)
+                onMarkWatched(menuItem)
                 optionsItem = null
             }
         )
@@ -622,7 +627,7 @@ fun ContinueWatchingCard(
     val bgCardColor = NuvioTheme.colors.BackgroundCard
     val backgroundPainter = remember(bgCardColor) { androidx.compose.ui.graphics.painter.ColorPainter(bgCardColor) }
 
-    Card(
+    LightweightCard(
         onClick = {
             if (longPressTriggered) {
                 longPressTriggered = false
@@ -661,23 +666,17 @@ fun ContinueWatchingCard(
                 }
                 false
             },
-        shape = CardDefaults.shape(shape = cwCardShape),
-        colors = CardDefaults.colors(
-            containerColor = Color.Transparent,
-            focusedContainerColor = Color.Transparent
-        ),
+        shape = cwCardShape,
+        containerColor = Color.Transparent,
         // With text under the artwork the card border would ring the text too, so the artwork draws its own.
-        border = if (textBelowArtwork) {
-            CardDefaults.border(focusedBorder = Border.None)
+        focusedBorder = if (textBelowArtwork) {
+            Border.None
         } else {
-            CardDefaults.border(
-                focusedBorder = Border(
-                    border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
-                    shape = cwCardShape
-                )
+            Border(
+                border = NuvioTheme.focusRing.border(NuvioTheme.spacing.xxs),
+                shape = cwCardShape
             )
-        },
-        scale = CardDefaults.scale(focusedScale = 1f)
+        }
     ) {
         if (isWideStyle) {
             WideCardContent(
@@ -709,7 +708,7 @@ fun ContinueWatchingCard(
                     }
                 }
             )
-            return@Card
+            return@LightweightCard
         }
         Column(
             modifier = if (textBelowArtwork) {
@@ -756,7 +755,7 @@ fun ContinueWatchingCard(
                 } else {
                     AsyncImage(
                         model = imageRequest,
-                        contentDescription = titleText,
+                        contentDescription = null,
                         modifier = Modifier
                             .fillMaxSize()
                             .graphicsLayer {
@@ -971,7 +970,7 @@ private fun WideCardContent(
             } else {
                 AsyncImage(
                     model = imageRequest,
-                    contentDescription = titleText,
+                    contentDescription = null,
                     modifier = Modifier
                         .fillMaxSize()
                         .then(if (shouldBlur) Modifier.blur(12.dp) else Modifier),
@@ -1129,7 +1128,8 @@ fun ContinueWatchingOptionsDialog(
     onDetails: () -> Unit,
     onStartFromBeginning: () -> Unit = {},
     showPlayManually: Boolean = false,
-    onPlayManually: () -> Unit = {}
+    onPlayManually: () -> Unit = {},
+    onMarkWatched: () -> Unit = {}
 ) {
     val isPlayEnabled = LocalPlaybackAvailability.current.canStream(item)
     val title = when (item) {
@@ -1184,6 +1184,19 @@ fun ContinueWatchingOptionsDialog(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(stringResource(R.string.cw_action_start_from_beginning))
+            }
+        }
+
+        if (item.canMarkWatched()) {
+            Button(
+                onClick = onMarkWatched,
+                colors = ButtonDefaults.colors(
+                    containerColor = NuvioTheme.colors.BackgroundCard,
+                    contentColor = NuvioTheme.colors.TextPrimary
+                ),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(stringResource(R.string.hero_mark_watched))
             }
         }
 

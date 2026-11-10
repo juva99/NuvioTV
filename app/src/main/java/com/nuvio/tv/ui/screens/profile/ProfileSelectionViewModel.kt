@@ -114,6 +114,11 @@ class ProfileSelectionViewModel @Inject constructor(
     private var phoneApprovalJob: Job? = null
     private var phoneApprovalGeneration = 0L
 
+    // Declared before init: the theme collector below can emit synchronously on
+    // Main.immediate when the theme stores are already cached.
+    private val _profileThemes = MutableStateFlow<Map<Int, com.nuvio.tv.domain.model.AppTheme>>(emptyMap())
+    val profileThemes: StateFlow<Map<Int, com.nuvio.tv.domain.model.AppTheme>> = _profileThemes.asStateFlow()
+
     init {
         refreshProfilePinStates()
         viewModelScope.launch {
@@ -154,9 +159,6 @@ class ProfileSelectionViewModel @Inject constructor(
             }
         }
     }
-
-    private val _profileThemes = MutableStateFlow<Map<Int, com.nuvio.tv.domain.model.AppTheme>>(emptyMap())
-    val profileThemes: StateFlow<Map<Int, com.nuvio.tv.domain.model.AppTheme>> = _profileThemes.asStateFlow()
 
     fun loadAvatarCatalog() {
         viewModelScope.launch {

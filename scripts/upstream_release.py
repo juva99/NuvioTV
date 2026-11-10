@@ -111,6 +111,23 @@ def github_api(endpoint: str, paginate: bool = False):
     return [item for page in data for item in page] if paginate else data
 
 
+def prepare_conflict_branch(tag: str, upstream_sha: str, fork_ref: str) -> None:
+    release_channel(tag)
+    subprocess.run(
+        ["git", "switch", "--create", f"automation/upstream-stable-{tag}", upstream_sha],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "restore", f"--source={fork_ref}", "--staged", "--worktree", "--", ".github/workflows"],
+        check=True,
+    )
+    changes = subprocess.run(["git", "diff", "--cached", "--quiet"], check=False)
+    if changes.returncode == 1:
+        subprocess.run(["git", "commit", "-m", "Preserve fork workflows for upstream conflict resolution"], check=True)
+    elif changes.returncode != 0:
+        changes.check_returncode()
+
+
 def conflict_pr_body(template: str, tag: str, conflicts: list[str], approval_url: str) -> str:
     details = {
         "Summary": f"Merge upstream stable `{tag}` into `dev`, preserving fork changes.",
@@ -163,6 +180,10 @@ def main() -> None:
     planner.add_argument("--baseline-tag", required=True)
     channel = commands.add_parser("release-channel")
     channel.add_argument("--tag", required=True)
+    branch = commands.add_parser("conflict-branch")
+    branch.add_argument("--tag", required=True)
+    branch.add_argument("--upstream-sha", required=True)
+    branch.add_argument("--fork-ref", required=True)
     pr = commands.add_parser("conflict-pr")
     pr.add_argument("--tag", required=True)
     pr.add_argument("--conflicts", required=True)
@@ -170,6 +191,9 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "release-channel":
         print(release_channel(args.tag))
+        return
+    if args.command == "conflict-branch":
+        prepare_conflict_branch(args.tag, args.upstream_sha, args.fork_ref)
         return
     if args.command == "conflict-pr":
         print(conflict_pr_body(
